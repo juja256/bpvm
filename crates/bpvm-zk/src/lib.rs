@@ -8,4 +8,4 @@ pub mod logup;
 pub mod vm;
 
 pub use logup::{LogUp, Lookup, Table};
-pub use vm::{prove, verify, witness, Statement, Stats, Witness};
+pub use vm::{prove, verify, witness, witness_with_io, Committed, IoSpec, Statement, Stats, Witness};

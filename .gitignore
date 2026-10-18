@@ -1,3 +1,5 @@
 /target
 /guest/*.o
 /guest-rs/target
+*.proof.json
+*.secrets.json

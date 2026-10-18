@@ -5,9 +5,9 @@ OBJDUMP := $(LLVM)/llvm-objdump
 CFLAGS  := --target=riscv32-unknown-elf -march=rv32im -mabi=ilp32 -O2 \
            -ffreestanding -fno-builtin -nostdlib -fno-pic -mno-relax
 
-all: fib.elf sha256.elf
+all: fib.elf sha256.elf balance.elf
 
-%.o: %.c
+%.o: %.c bpvm.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 %.elf: start.o %.o link.ld

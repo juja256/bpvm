@@ -35,7 +35,13 @@ multipliers, 4.9 s prove) including the fixed table costs.
   result, wrong loaded value, wrong branch, skipped step) proven by a cheating prover
   (`logup::set_unchecked_prover`) — all rejected by the verifier.
 
-**Public / leaked**: program, step count, per-opcode counts, RAM image layout, exit code.
+- Guest I/O (`guest/bpvm.h`): public inputs patch the RAM image; private inputs and
+  outputs are bound to Pedersen commitments through the memory boundary (`vm.rs`, I/O in the
+  module docs); public outputs constrain final values. CLI: `bpvm prove` / `bpvm verify`
+  with JSON input, proof and secrets files.
+
+**Public / leaked**: program, step count, per-opcode counts, RAM image layout, exit code,
+public I/O, number of committed values.
 Values in registers and memory stay hidden (the R1CS proof is zero-knowledge).
 **Toy limits**: RAM accesses must stay inside the ELF's non-executable segments (stack is a
 `NOLOAD` section in `guest/link.ld`); naturally aligned accesses only; no self-modifying
@@ -144,8 +150,8 @@ past ~$10^4$ cycles).
 C: Homebrew `llvm` (clang with the RISC-V backend) + `lld`, see `guest/Makefile`
 (`--target=riscv32-unknown-elf -march=rv32im -mabi=ilp32 -O2 -ffreestanding -nostdlib`).
 Rust guests need `rustup target add riscv32im-unknown-none-elf` (tier 2, `no_std`). Guest runtime: `_start` sets `sp`, calls `main`, halts with
-`ecall` (`a7 = 93`, exit code in `a0`). I/O ecalls (read input word / commit output word)
-come with M4. ELF loading: map `PT_LOAD` segments; `.text` becomes the program table.
+`ecall` (`a7 = 93`, exit code in `a0`). Instead of I/O ecalls the guest
+uses memory-mapped I/O variables in sections `.bpvm.<kind>.<type>` (`guest/bpvm.h`). ELF loading: map `PT_LOAD` segments; `.text` becomes the program table.
 
 ## 6. Backend outlook
 
@@ -161,8 +167,9 @@ come with M4. ELF loading: map `PT_LOAD` segments; `.text` becomes the program t
 
 - **M0** ✅ interpreter + trace, lookup gadget, scaling benchmark.
 - **M1–M3** ✅ bus, CPU chip, memory argument, full RV32IM chips, ELF loader, C guest.
-- **M4** guest SDK (Rust `no_std` runtime), input/output ecalls, Pedersen-committed inputs;
-  hide the instruction mix (pad chips with dummy rows that cancel on the bus).
+- **M4** ✅ public/private I/O with Pedersen-committed inputs and outputs (memory-mapped,
+  no ecalls). Next: Rust guest crate with the same macros; hide the instruction mix (pad
+  chips with dummy rows that cancel on the bus).
 - **M5** benchmarks (fib, sha256, ...), multi-threaded prover, capacity tuning.
 - **M6** BP++ or sumcheck backend.
 

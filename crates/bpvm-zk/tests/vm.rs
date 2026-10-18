@@ -9,7 +9,7 @@ use bpvm_emu::{Image, Machine, Trace};
 const DATA: u32 = 0x1000;
 
 fn image(code: &[u32], data_words: usize) -> Image {
-    let mut img = Image { entry: 0, code: BTreeMap::new(), data: BTreeMap::new() };
+    let mut img = Image { entry: 0, code: BTreeMap::new(), data: BTreeMap::new(), io: Vec::new() };
     for (i, w) in code.iter().enumerate() {
         img.code.insert(4 * i as u32, *w);
     }
@@ -161,6 +161,60 @@ fn fib_elf() {
     let t = exec(&img);
     assert_eq!(t.exit_code, 55);
     prove_and_verify(&img, &t).unwrap();
+}
+
+/// `guest/balance.elf`: private inputs and outputs behind Pedersen commitments.
+#[test]
+fn committed_io() {
+    use bpvm_emu::IoKind;
+    use bpvm_zk::{IoSpec, Statement};
+    use curve25519_dalek::scalar::Scalar;
+
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../guest/balance.elf");
+    let Ok(bytes) = std::fs::read(path) else {
+        eprintln!("skipping: build guest/balance.elf with `make -C guest`");
+        return;
+    };
+    let mut img = Image::from_elf(&bytes).unwrap();
+    let values = [("inputs", vec![1000, 2500]), ("outputs", vec![3000, 490]), ("fee", vec![10]), ("max_output", vec![5000])];
+    let mut spec = IoSpec::default();
+    let mut blind = 1u64;
+    for var in img.io.clone() {
+        if let Some((_, v)) = values.iter().find(|(n, _)| *n == var.name) {
+            for (a, w) in var.to_words(v) {
+                img.data.insert(a, w);
+            }
+        }
+        for i in 0..var.count {
+            blind += 1;
+            match var.kind {
+                IoKind::PrivateInput => spec.private_in.push((var.words(i), Scalar::from(blind))),
+                IoKind::PrivateOutput => spec.private_out.push((var.words(i), Scalar::from(blind))),
+                IoKind::PublicOutput => spec.public_out.extend(var.words(i)),
+                IoKind::PublicInput => {}
+            }
+        }
+    }
+    let t = exec(&img);
+    assert_eq!(t.exit_code, 0);
+    let (st, wit) = bpvm_zk::witness_with_io(&img, &t, &spec).unwrap();
+    assert_eq!((st.private_in.len(), st.private_out.len()), (4, 1));
+    assert_eq!(wit.openings()[4].0, 3500, "total");
+    // The public statement does not contain the private input values.
+    let hidden: Vec<u32> = st.private_in.iter().flat_map(|c| c.words.clone()).collect();
+    assert!(st.ram.iter().filter(|(a, _)| hidden.contains(a)).all(|(_, v)| *v == 0));
+
+    let (proof, _) = bpvm_zk::prove(&st, &wit).unwrap();
+    bpvm_zk::verify(&st, &proof).unwrap();
+
+    let reject = |f: &dyn Fn(&mut Statement)| {
+        let mut forged = st.clone();
+        f(&mut forged);
+        assert!(bpvm_zk::verify(&forged, &proof).is_err());
+    };
+    reject(&|s| s.private_in.swap(0, 1));
+    reject(&|s| s.private_out[0].commitment = s.private_in[0].commitment);
+    reject(&|s| s.public_out[0].1 = 0);
 }
 
 // ---- soundness: a tampered trace yields a proof that does not verify ----

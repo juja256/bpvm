@@ -12,3 +12,7 @@ path = "src/main.rs"
 [dependencies]
 bpvm-emu = { path = "../bpvm-emu" }
 bpvm-zk = { path = "../bpvm-zk" }
+bulletproofs.workspace = true
+curve25519-dalek.workspace = true
+rand.workspace = true
+serde_json = "1"
