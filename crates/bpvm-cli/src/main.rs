@@ -1,4 +1,4 @@
-//! `bpvm <program.elf>` — execute, prove, verify.
+//! `bpvm [--no-prove] <program.elf>` — execute, prove, verify.
 
 use std::process::ExitCode;
 
@@ -7,11 +7,13 @@ use bpvm_emu::{Image, Machine};
 const MAX_STEPS: u64 = 1 << 20;
 
 fn main() -> ExitCode {
-    let Some(path) = std::env::args().nth(1) else {
-        eprintln!("usage: bpvm <program.elf>");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let prove = !args.iter().any(|a| a == "--no-prove");
+    let Some(path) = args.iter().find(|a| !a.starts_with("--")) else {
+        eprintln!("usage: bpvm [--no-prove] <program.elf>");
         return ExitCode::FAILURE;
     };
-    match run(&path) {
+    match run(path, prove) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
@@ -20,7 +22,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(path: &str) -> Result<(), String> {
+fn run(path: &str, prove: bool) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     let img = Image::from_elf(&bytes)?;
     println!(
@@ -36,6 +38,9 @@ fn run(path: &str) -> Result<(), String> {
     let (stmt, wit) = bpvm_zk::witness(&img, &trace)?;
     let mix: Vec<String> = stmt.op_counts.iter().map(|(op, n)| format!("{op:?}×{n}")).collect();
     println!("instruction mix: {}", mix.join(" "));
+    if !prove {
+        return Ok(());
+    }
 
     let (proof, stats) = bpvm_zk::prove(&stmt, &wit).map_err(|e| format!("prover: {e:?}"))?;
     println!(

@@ -43,7 +43,7 @@ code; the only syscall is halt; not audited.
 
 ## 1. Does this make sense? Cost model
 
-Measured on this machine (Apple Silicon, single thread, release, `examples/r1cs_scaling.rs`):
+Measured on an Apple M4 Pro, 24 GB (single thread, release, `examples/r1cs_scaling.rs`):
 
 | multipliers $n$ | gens | prove | verify | proof |
 |---|---|---|---|---|

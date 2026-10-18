@@ -1,0 +1,12 @@
+# Homebrew rustc ships rust-src but no prebuilt core for RISC-V, so build core ourselves.
+# Needs RUSTC_BOOTSTRAP=1 on stable (see Makefile).
+[build]
+target = "riscv32im-unknown-none-elf"
+
+[unstable]
+build-std = ["core", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.riscv32im-unknown-none-elf]
+linker = "ld.lld"
+rustflags = ["-C", "link-arg=-Tlink.ld", "-C", "link-arg=--no-relax", "-C", "relocation-model=static"]
