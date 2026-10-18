@@ -7,7 +7,7 @@
 //! bpvm [--no-prove] <elf> [-i input.json]       demo: prove, verify, reject a forged exit code
 //! ```
 //!
-//! The input file maps the guest's input variables (see `guest/bpvm.h`) to values:
+//! The input file maps the guest's input variables (see `guest/common/bpvm.h`) to values:
 //! a number, a decimal or `0x` hex string, an array of those, or (for `uint8_t` arrays) a
 //! text string. A private element may be `{"value": .., "blinding": "<hex scalar>"}` to
 //! reuse an existing Pedersen commitment; otherwise a random blinding is drawn.

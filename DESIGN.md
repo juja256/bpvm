@@ -5,11 +5,11 @@ A zkVM for RV32IM on top of Bulletproofs R1CS (`zero-art-rs/bulletproofs`, a for
 example). Guests are Rust/C programs compiled to `riscv32im`; the prover executes the ELF,
 records the trace and proves it in one R1CS instance.
 
-Status (2026-10-18): **toy VM complete for RV32IM** — a C program (`guest/fib.c`, F(10))
+Status (2026-10-18): **toy VM complete for RV32IM** — a C program (`guest/fib/fib.c`, F(10))
 compiles with clang/lld, runs, and its execution is proven and verified end to end:
 
 ```
-$ make -C guest && cargo run --release -p bpvm-cli -- guest/fib.elf
+$ make -C guest && cargo run --release -p bpvm-cli -- guest/fib/fib.elf
 executed 78 steps, exit code 55
 proved:   4515 multipliers (padded to 8192), proof 1345 bytes, 0.63 s
 verified: program halts with exit code 55 after 78 steps (0.11 s)
@@ -35,7 +35,7 @@ multipliers, 4.9 s prove) including the fixed table costs.
   result, wrong loaded value, wrong branch, skipped step) proven by a cheating prover
   (`logup::set_unchecked_prover`) — all rejected by the verifier.
 
-- Guest I/O (`guest/bpvm.h`): public inputs patch the RAM image; private inputs and
+- Guest I/O (`guest/common/bpvm.h`): public inputs patch the RAM image; private inputs and
   outputs are bound to Pedersen commitments through the memory boundary (`vm.rs`, I/O in the
   module docs); public outputs constrain final values. CLI: `bpvm prove` / `bpvm verify`
   with JSON input, proof and secrets files.
@@ -44,7 +44,7 @@ multipliers, 4.9 s prove) including the fixed table costs.
 public I/O, number of committed values.
 Values in registers and memory stay hidden (the R1CS proof is zero-knowledge).
 **Toy limits**: RAM accesses must stay inside the ELF's non-executable segments (stack is a
-`NOLOAD` section in `guest/link.ld`); naturally aligned accesses only; no self-modifying
+`NOLOAD` section in `guest/common/link.ld`); naturally aligned accesses only; no self-modifying
 code; the only syscall is halt; not audited.
 
 ## 1. Does this make sense? Cost model
@@ -147,11 +147,11 @@ past ~$10^4$ cycles).
 
 ## 5. Guest toolchain
 
-C: Homebrew `llvm` (clang with the RISC-V backend) + `lld`, see `guest/Makefile`
+C: Homebrew `llvm` (clang with the RISC-V backend) + `lld`, see `guest/common/rules.mk`
 (`--target=riscv32-unknown-elf -march=rv32im -mabi=ilp32 -O2 -ffreestanding -nostdlib`).
 Rust guests need `rustup target add riscv32im-unknown-none-elf` (tier 2, `no_std`). Guest runtime: `_start` sets `sp`, calls `main`, halts with
 `ecall` (`a7 = 93`, exit code in `a0`). Instead of I/O ecalls the guest
-uses memory-mapped I/O variables in sections `.bpvm.<kind>.<type>` (`guest/bpvm.h`). ELF loading: map `PT_LOAD` segments; `.text` becomes the program table.
+uses memory-mapped I/O variables in sections `.bpvm.<kind>.<type>` (`guest/common/bpvm.h`). ELF loading: map `PT_LOAD` segments; `.text` becomes the program table.
 
 ## 6. Backend outlook
 

@@ -152,9 +152,9 @@ fn control_flow() {
 
 #[test]
 fn fib_elf() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../guest/fib.elf");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../guest/fib/fib.elf");
     let Ok(bytes) = std::fs::read(path) else {
-        eprintln!("skipping: build guest/fib.elf with `make -C guest`");
+        eprintln!("skipping: build guest/fib/fib.elf with `make -C guest`");
         return;
     };
     let img = Image::from_elf(&bytes).unwrap();
@@ -163,16 +163,16 @@ fn fib_elf() {
     prove_and_verify(&img, &t).unwrap();
 }
 
-/// `guest/balance.elf`: private inputs and outputs behind Pedersen commitments.
+/// `guest/balance/balance.elf`: private inputs and outputs behind Pedersen commitments.
 #[test]
 fn committed_io() {
     use bpvm_emu::IoKind;
     use bpvm_zk::{IoSpec, Statement};
     use curve25519_dalek::scalar::Scalar;
 
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../guest/balance.elf");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../guest/balance/balance.elf");
     let Ok(bytes) = std::fs::read(path) else {
-        eprintln!("skipping: build guest/balance.elf with `make -C guest`");
+        eprintln!("skipping: build guest/balance/balance.elf with `make -C guest`");
         return;
     };
     let mut img = Image::from_elf(&bytes).unwrap();

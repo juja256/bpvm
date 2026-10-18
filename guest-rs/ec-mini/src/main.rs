@@ -11,15 +11,7 @@
 
 use core::hint::black_box;
 
-core::arch::global_asm!(
-    ".section .text.start",
-    ".global _start",
-    "_start:",
-    "la sp, __stack_top",
-    "call main",
-    "li a7, 93",
-    "ecall",
-);
+use bpvm_guest as _;
 
 type Fe = [u32; 8];
 
@@ -189,9 +181,4 @@ extern "C" fn main() -> u32 {
     let z3 = mul(&z2, &r.z);
     let ok = r.x == mul(&G3_X, &z2) && r.y == mul(&G3_Y, &z3);
     ok as u32
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    unsafe { core::arch::asm!("li a0, -1", "li a7, 93", "ecall", options(noreturn)) }
 }

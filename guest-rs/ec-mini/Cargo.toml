@@ -1,0 +1,9 @@
+[package]
+name = "ec-mini"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "Dependency-free secp256k1 point addition"
+
+[dependencies]
+bpvm-guest = { path = "../bpvm-guest" }

@@ -1,18 +1,12 @@
-[package]
-name = "ec-add"
-version = "0.1.0"
+# Rust guests for bpvm: a separate workspace, built for riscv32im-unknown-none-elf
+# (see .cargo/config.toml and README.md).
+[workspace]
+resolver = "2"
+members = ["bpvm-guest", "ec-add", "ec-mini"]
+
+[workspace.package]
 edition = "2021"
 publish = false
-
-# Standalone: not part of the host workspace (different target).
-[workspace]
-
-[dependencies]
-k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
-
-[features]
-# Same program without the point addition: the step difference is the cost of one addition.
-baseline = []
 
 [profile.release]
 opt-level = 3

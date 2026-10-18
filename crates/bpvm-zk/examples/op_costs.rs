@@ -15,7 +15,7 @@ fn load(path: &str) -> Statement {
 
 fn main() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../");
-    let base = load(&format!("{dir}guest/fib.elf"));
+    let base = load(&format!("{dir}guest/fib/fib.elf"));
     let size = |f: &dyn Fn(&mut Statement)| {
         let mut st = base.clone();
         f(&mut st);
@@ -39,7 +39,7 @@ fn main() {
     // Check the model against real programs: fixed + steps·cpu + Σ count·cost.
     let mut paths: Vec<String> = std::env::args().skip(1).collect();
     if paths.is_empty() {
-        paths = vec![format!("{dir}guest/fib.elf"), format!("{dir}guest/sha256.elf")];
+        paths = vec![format!("{dir}guest/fib/fib.elf"), format!("{dir}guest/sha256/sha256.elf")];
     }
     println!();
     for p in paths {

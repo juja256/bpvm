@@ -12,15 +12,7 @@ use core::hint::black_box;
 use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
 use k256::{AffinePoint, EncodedPoint, ProjectivePoint};
 
-core::arch::global_asm!(
-    ".section .text.start",
-    ".global _start",
-    "_start:",
-    "la sp, __stack_top",
-    "call main",
-    "li a7, 93",
-    "ecall",
-);
+use bpvm_guest as _;
 
 /// 2G, uncompressed SEC1.
 const TWO_G: [u8; 65] = [
@@ -43,10 +35,4 @@ extern "C" fn main() -> u32 {
 
     let x = r.to_affine().to_encoded_point(false);
     x.as_bytes()[1] as u32
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    // Halt with a recognisable exit code.
-    unsafe { core::arch::asm!("li a0, -1", "li a7, 93", "ecall", options(noreturn)) }
 }

@@ -7,27 +7,41 @@ reciprocal-argument (logUp) lookups and memory checking. See [DESIGN.md](DESIGN.
 crates/bpvm-emu   RV32IM interpreter recording the execution trace, ELF loader
 crates/bpvm-zk    the circuit: logUp argument, gadgets, opcode chips, CPU + memory, prove/verify
 crates/bpvm-cli   `bpvm run|prove|verify <elf>`: execute, prove to a JSON proof file, verify
-guest/            C guests: F(10), SHA-256("abc"), confidential balance check; bpvm.h (I/O),
-                  bare-metal runtime, linker script, Makefile (clang + lld)
-guest-rs/         Rust guests (no_std, core built from rust-src): secp256k1 point addition with k256
-                  and a dependency-free version (`make -C guest-rs`, needs ld.lld)
+guest/            C guests (fib, sha256, balance) and their runtime     -> guest/README.md
+guest-rs/         Rust guests (ec-add with k256, ec-mini) and runtime  -> guest-rs/README.md
 ```
 
+## Quick start
+
 ```sh
-make -C guest                                   # needs Homebrew llvm + lld
-cargo run --release -p bpvm-cli -- guest/fib.elf
-cargo run --release -p bpvm-cli -- --no-prove guest-rs/ec_add.elf   # execute only
+cargo run --release -p bpvm-cli -- guest/fib/fib.elf          # execute, prove, verify F(10)
+cargo run --release -p bpvm-cli -- run guest-rs/ec-add/ec_add.elf   # execute only
 cargo test --release
-cargo run --release -p bpvm-zk --example r1cs_scaling
-cargo run --release -p bpvm-zk --example mem_profile -- guest/sha256.elf   # heap per prover stage
 ```
+
+The example ELFs are committed. To rebuild them or write your own guest see
+[guest/README.md](guest/README.md) (C: Homebrew llvm + lld) and
+[guest-rs/README.md](guest-rs/README.md) (Rust: rust-src + lld).
 
 `--features parallel` (on `bpvm-cli` or `bpvm-zk`) enables the multi-threaded prover and
 verifier of the bulletproofs fork (rayon); proofs are identical to the serial ones.
 
+Command line:
+
+```
+bpvm run    <elf> [-i input.json]                                   execute only
+bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json]  execute and prove
+bpvm verify <elf> <proof.json>                                     verify
+bpvm [--no-prove] <elf> [-i input.json]       demo: prove, verify, reject a forged exit code
+```
+
+Developer examples (`cargo run --release -p bpvm-zk --example <name>`): `op_costs`
+(multipliers per opcode), `linear_cost` (cost of linear constraints), `mem_profile <elf>`
+(heap per prover stage), `r1cs_scaling` (prover/verifier time vs circuit size).
+
 ## Inputs and outputs, Pedersen commitments
 
-The guest declares I/O variables with the macros from [`guest/bpvm.h`](guest/bpvm.h); the
+The guest declares I/O variables with the macros from [`guest/common/bpvm.h`](guest/common/bpvm.h); the
 host finds them by name in the ELF symbol table and reads the element type from the section
 name, so nothing else has to be configured:
 
@@ -41,7 +55,7 @@ BPVM_PUBLIC_OUTPUT(uint32_t, ok);          // final value revealed
 BPVM_PRIVATE_OUTPUT(uint64_t, total);      // final value committed with a fresh blinding
 ```
 
-Values go into a JSON file next to the program ([`guest/balance.json`](guest/balance.json)):
+Values go into a JSON file next to the program ([`guest/balance/balance.json`](guest/balance/balance.json)):
 
 ```json
 { "inputs": [1000, 2500], "outputs": [3000, 490], "fee": 10, "max_output": 5000 }
@@ -52,8 +66,8 @@ made elsewhere; otherwise the blinding is random. `uint8_t` arrays (public only)
 text string.
 
 ```sh
-bpvm prove  guest/balance.elf -i guest/balance.json   # -> balance.proof.json, balance.secrets.json
-bpvm verify guest/balance.elf guest/balance.proof.json
+bpvm prove  guest/balance/balance.elf -i guest/balance/balance.json   # -> balance.proof.json, balance.secrets.json
+bpvm verify guest/balance/balance.elf guest/balance/balance.proof.json
 ```
 
 - `*.proof.json` is public: step count, opcode counts, exit code, public inputs/outputs,
@@ -74,21 +88,24 @@ with volatile access.
 
 `cargo run --release -p bpvm-cli [--features parallel] -- <elf>`: execute, prove, verify
 (2026-10-18). Serial: the original single-threaded prover; parallel: the optimised fork
-(`zero-art-rs/bulletproofs` 52cecec) with `--features parallel`.
+(`zero-art-rs/bulletproofs` 3100919) with `--features parallel`.
 
 | guest | steps | multipliers (padded) | proof | serial prove / verify | parallel prove / verify | parallel RSS |
 |---|---|---|---|---|---|---|
-| `guest/fib.elf` — C, F(10) | 78 | 4 515 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.29 s / 0.04 s | |
-| `guest/balance.elf` — C, 4 committed inputs, 1 committed output | 72 | 4 864 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.27 s / 0.04 s | |
-| `guest/sha256.elf` — C, SHA-256("abc"), one block | 5 904 | 314 627 ($2^{19}$) | 1729 B | 38.4 s / 7.0 s | 6.0 s / 0.88 s | 0.74 GB |
-| `guest-rs/ec_mini.elf` — Rust, dependency-free secp256k1 $G+2G$ (Jacobian add + check against $3G$) | 20 713 | 977 743 ($2^{20}$) | 1793 B | 92.3 s / 14.2 s (3.5 GB) | 14.0 s / 2.1 s | 1.5 GB |
-| `guest-rs/ec_add.elf` — Rust, `k256`: $G+2G$, decode + to_affine | 253 556 | 12 407 610 ($2^{24}$) | 2049 B | did not fit in 24 GB | 215 s / 35 s | 9.4 GB |
+| `guest/fib/fib.elf` — C, F(10) | 78 | 4 515 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.29 s / 0.04 s | |
+| `guest/balance/balance.elf` — C, 4 committed inputs, 1 committed output | 72 | 4 864 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.27 s / 0.04 s | |
+| `guest/sha256/sha256.elf` — C, SHA-256("abc"), one block | 5 904 | 314 627 ($2^{19}$) | 1729 B | 38.4 s / 7.0 s | 6.0 s / 0.59 s | 0.64 GB |
+| `guest-rs/ec-mini/ec_mini.elf` — Rust, dependency-free secp256k1 $G+2G$ (Jacobian add + check against $3G$) | 20 713 | 977 743 ($2^{20}$) | 1793 B | 92.3 s / 14.2 s (3.5 GB) | 13.8 s / 1.45 s | 1.3 GB |
+| `guest-rs/ec-add/ec_add.elf` — Rust, `k256`: $G+2G$, decode + to_affine | 253 556 | 12 407 610 ($2^{24}$) | 2049 B | did not fit in 24 GB | 210 s / 21.7 s | 10.3 GB |
 
 Prover memory went from ≈ 3.4 KB to ≈ 1.2 KB per multiplier (chunked multiscalar
 multiplications, no generator copies in the inner-product argument, streamed $t(X)$,
 compact constraint storage), which is what made the $2^{24}$ circuit of `ec_add` provable.
-One `k256` point addition is ≈ 14.4k steps (`ec_add` − `ec_base`); the rest is the square
-root in point decoding and the inversion in `to_affine`.
+The verifier uses the same compact constraint storage and computes its final multiscalar
+multiplication over generator slices with the scalars computed in parallel.
+One `k256` point addition is ≈ 14.4k steps (`ec_add` − `ec_add_base`); most of the rest is
+the field inversion in `to_affine` ($2G$ is decoded from uncompressed SEC1, which only checks
+the curve equation).
 
 ### Multipliers per instruction
 
@@ -128,7 +145,7 @@ RAM word for the memory boundary (fib 0.9k, sha256 1.5k, ec_mini 9.6k with a 16 
 Measured averages: fib 45.9, sha256 53.0 (bitwise-heavy), ec_mini 46.7 per step.
 
 Rule of thumb: ≈ 50 multipliers per executed instruction; per multiplier ≈ 80 µs to prove
-and ≈ 5 µs to verify single-threaded, ≈ 14 µs and ≈ 2 µs with `parallel` (linear); proof
+and ≈ 5 µs to verify single-threaded, ≈ 14 µs and ≈ 1.5 µs with `parallel` (linear); proof
 $2\log_2 n + O(1)$ group elements.
 
 Hardware: MacBook Pro (Mac16,7), Apple M4 Pro (10 performance + 4 efficiency cores), 24 GB RAM,

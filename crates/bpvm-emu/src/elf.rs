@@ -5,7 +5,7 @@
 //! (`p_memsz > p_filesz`, i.e. `.bss` and the stack).
 //!
 //! Guest I/O variables are global symbols placed in sections named
-//! `.bpvm.<kind>.<type>` (see `guest/bpvm.h`); they are collected into [`Image::io`].
+//! `.bpvm.<kind>.<type>` (see `guest/common/bpvm.h`); they are collected into [`Image::io`].
 
 use std::collections::BTreeMap;
 

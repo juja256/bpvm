@@ -9,6 +9,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
 
 [[package]]
+name = "bpvm-guest"
+version = "0.1.0"
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -46,7 +50,15 @@ dependencies = [
 name = "ec-add"
 version = "0.1.0"
 dependencies = [
+ "bpvm-guest",
  "k256",
+]
+
+[[package]]
+name = "ec-mini"
+version = "0.1.0"
+dependencies = [
+ "bpvm-guest",
 ]
 
 [[package]]

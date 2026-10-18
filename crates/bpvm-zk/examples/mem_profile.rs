@@ -1,5 +1,5 @@
 //! Heap profile of proving a guest: live bytes after each stage and the peak.
-//! `cargo run --release -p bpvm-zk --example mem_profile -- guest/sha256.elf`
+//! `cargo run --release -p bpvm-zk --example mem_profile -- guest/sha256/sha256.elf`
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -64,7 +64,10 @@ fn main() {
     let n = bpvm_zk::multipliers(&st).unwrap();
     PEAK.store(LIVE.load(Relaxed), Relaxed);
     report("sized", Some(n));
-    let (_, stats) = bpvm_zk::vm::prove_staged(&st, &wit, |s| report(s, Some(n))).unwrap();
+    let (proof, stats) = bpvm_zk::vm::prove_staged(&st, &wit, |s| report(s, Some(n))).unwrap();
     report("proved", Some(n));
+    let t = bpvm_zk::verify(&st, &proof).unwrap();
+    report("verified", Some(n));
+    println!("verify {t:.2?}");
     println!("{} steps, {n} multipliers, prove {:.2?}", st.steps, stats.time);
 }
