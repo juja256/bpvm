@@ -397,6 +397,16 @@ fn commit_prover(prover: &mut Prover<'_, &mut Transcript>, st: &Statement, wit: 
         .collect()
 }
 
+/// Number of multipliers of the circuit for `st` (synthesized without a witness).
+pub fn multipliers(st: &Statement) -> Result<usize, R1CSError> {
+    let mut transcript = Transcript::new(b"bpvm-size");
+    let mut verifier = Verifier::new(&mut transcript);
+    let committed: Vec<Variable> =
+        st.private_in.iter().chain(&st.private_out).map(|c| verifier.commit(c.commitment)).collect();
+    let phase2 = synthesize(&mut verifier, st, None, &committed)?;
+    Ok(verifier.metrics().multipliers + phase2)
+}
+
 pub fn prove(st: &Statement, wit: &Witness) -> Result<(R1CSProof, Stats), R1CSError> {
     let start = Instant::now();
     let pc_gens = PedersenGens::default();
