@@ -376,8 +376,17 @@ pub struct Stats {
     pub time: Duration,
 }
 
-fn gens_for(n: usize) -> BulletproofGens {
-    BulletproofGens::new(n.next_power_of_two(), 1)
+/// Generators for `n` multipliers, shared across proofs and verifications in this process
+/// (deriving them is a hash-to-group per point).
+fn gens_for(n: usize) -> std::sync::RwLockReadGuard<'static, BulletproofGens> {
+    use std::sync::{OnceLock, RwLock};
+    static GENS: OnceLock<RwLock<BulletproofGens>> = OnceLock::new();
+    let lock = GENS.get_or_init(|| RwLock::new(BulletproofGens::new(1, 1)));
+    let need = n.next_power_of_two();
+    if lock.read().unwrap().gens_capacity < need {
+        lock.write().unwrap().increase_capacity(need);
+    }
+    lock.read().unwrap()
 }
 
 fn commit_prover(prover: &mut Prover<'_, &mut Transcript>, st: &Statement, wit: &Witness) -> Result<Vec<Variable>, R1CSError> {
@@ -408,6 +417,12 @@ pub fn multipliers(st: &Statement) -> Result<usize, R1CSError> {
 }
 
 pub fn prove(st: &Statement, wit: &Witness) -> Result<(R1CSProof, Stats), R1CSError> {
+    prove_staged(st, wit, |_| {})
+}
+
+/// [`prove`] with a callback after each stage ("synthesized"), for profiling.
+#[doc(hidden)]
+pub fn prove_staged(st: &Statement, wit: &Witness, mut stage: impl FnMut(&'static str)) -> Result<(R1CSProof, Stats), R1CSError> {
     let start = Instant::now();
     let pc_gens = PedersenGens::default();
     let mut transcript = Transcript::new(b"bpvm");
@@ -415,6 +430,7 @@ pub fn prove(st: &Statement, wit: &Witness) -> Result<(R1CSProof, Stats), R1CSEr
     let mut prover = Prover::new(&pc_gens, &mut transcript);
     let committed = commit_prover(&mut prover, st, wit)?;
     let phase2 = synthesize(&mut prover, st, Some(wit), &committed)?;
+    stage("synthesized");
     let n = prover.metrics().multipliers + phase2;
     let proof = prover.prove(&gens_for(n))?;
     let stats = Stats { multipliers: n, padded: n.next_power_of_two(), proof_bytes: proof.to_bytes().len(), time: start.elapsed() };

@@ -13,3 +13,7 @@ bpvm-emu = { path = "../bpvm-emu" }
 
 [dev-dependencies]
 rand.workspace = true
+
+[features]
+# Multi-threaded prover and verifier (bulletproofs/parallel, rayon).
+parallel = ["bulletproofs/parallel"]

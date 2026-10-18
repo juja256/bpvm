@@ -19,7 +19,11 @@ cargo run --release -p bpvm-cli -- guest/fib.elf
 cargo run --release -p bpvm-cli -- --no-prove guest-rs/ec_add.elf   # execute only
 cargo test --release
 cargo run --release -p bpvm-zk --example r1cs_scaling
+cargo run --release -p bpvm-zk --example mem_profile -- guest/sha256.elf   # heap per prover stage
 ```
+
+`--features parallel` (on `bpvm-cli` or `bpvm-zk`) enables the multi-threaded prover and
+verifier of the bulletproofs fork (rayon); proofs are identical to the serial ones.
 
 ## Inputs and outputs, Pedersen commitments
 
@@ -68,20 +72,23 @@ with volatile access.
 
 ## Benchmarks
 
-`cargo run --release -p bpvm-cli -- <elf>`: execute, prove, verify (2026-10-18).
+`cargo run --release -p bpvm-cli [--features parallel] -- <elf>`: execute, prove, verify
+(2026-10-18). Serial: the original single-threaded prover; parallel: the optimised fork
+(`zero-art-rs/bulletproofs` 52cecec) with `--features parallel`.
 
-| guest | steps | multipliers (padded) | proof | prove | verify |
-|---|---|---|---|---|---|
-| `guest/balance.elf` — C, 4 committed inputs, 1 committed output | 72 | 4 864 ($2^{13}$) | 1345 B | 0.63 s | 0.11 s |
-| `guest/fib.elf` — C, F(10) | 78 | 4 515 ($2^{13}$) | 1345 B | 0.63 s | 0.11 s |
-| `guest/sha256.elf` — C, SHA-256("abc"), one block | 5 904 | 314 627 ($2^{19}$) | 1729 B | 38.4 s | 7.0 s |
-| `guest-rs/ec_mini.elf` — Rust, dependency-free secp256k1 $G+2G$ (Jacobian add + check against $3G$) | 20 713 | 977 743 ($2^{20}$) | 1793 B | 92.3 s | 14.2 s |
-| `guest-rs/ec_add.elf` — Rust, `k256`: $G+2G$, decode + to_affine | 253 556 | ≈ 12.7M (est.) | — | — | — |
+| guest | steps | multipliers (padded) | proof | serial prove / verify | parallel prove / verify | parallel RSS |
+|---|---|---|---|---|---|---|
+| `guest/fib.elf` — C, F(10) | 78 | 4 515 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.29 s / 0.04 s | |
+| `guest/balance.elf` — C, 4 committed inputs, 1 committed output | 72 | 4 864 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.27 s / 0.04 s | |
+| `guest/sha256.elf` — C, SHA-256("abc"), one block | 5 904 | 314 627 ($2^{19}$) | 1729 B | 38.4 s / 7.0 s | 6.0 s / 0.88 s | 0.74 GB |
+| `guest-rs/ec_mini.elf` — Rust, dependency-free secp256k1 $G+2G$ (Jacobian add + check against $3G$) | 20 713 | 977 743 ($2^{20}$) | 1793 B | 92.3 s / 14.2 s (3.5 GB) | 14.0 s / 2.1 s | 1.5 GB |
+| `guest-rs/ec_add.elf` — Rust, `k256`: $G+2G$, decode + to_affine | 253 556 | 12 407 610 ($2^{24}$) | 2049 B | did not fit in 24 GB | 215 s / 35 s | 9.4 GB |
 
-`ec_mini` peaks at 3.5 GB RSS. `ec_add` is execution only (`--no-prove`): at ≈ 50 multipliers
-per step it needs $2^{24}$ generators and does not fit in 24 GB; one `k256` point addition is
-≈ 14.4k steps (`ec_add` − `ec_base`), the rest is the square root in point decoding and the
-inversion in `to_affine`.
+Prover memory went from ≈ 3.4 KB to ≈ 1.2 KB per multiplier (chunked multiscalar
+multiplications, no generator copies in the inner-product argument, streamed $t(X)$,
+compact constraint storage), which is what made the $2^{24}$ circuit of `ec_add` provable.
+One `k256` point addition is ≈ 14.4k steps (`ec_add` − `ec_base`); the rest is the square
+root in point decoding and the inversion in `to_affine`.
 
 ### Multipliers per instruction
 
@@ -120,8 +127,9 @@ division are the expensive ones. Fixed part: lookup multiplicities and ≈ 2 mul
 RAM word for the memory boundary (fib 0.9k, sha256 1.5k, ec_mini 9.6k with a 16 KB stack).
 Measured averages: fib 45.9, sha256 53.0 (bitwise-heavy), ec_mini 46.7 per step.
 
-Rule of thumb: ≈ 50 multipliers per executed instruction, ≈ 80 µs/multiplier to prove and
-≈ 5 µs/multiplier to verify (linear), proof $2\log_2 n + O(1)$ group elements.
+Rule of thumb: ≈ 50 multipliers per executed instruction; per multiplier ≈ 80 µs to prove
+and ≈ 5 µs to verify single-threaded, ≈ 14 µs and ≈ 2 µs with `parallel` (linear); proof
+$2\log_2 n + O(1)$ group elements.
 
 Hardware: MacBook Pro (Mac16,7), Apple M4 Pro (10 performance + 4 efficiency cores), 24 GB RAM,
-macOS 26.6; single-threaded prover, `rustc 1.99.1`, release profile.
+macOS 26.6; `rustc 1.99.1`, release profile; `parallel` uses all cores via rayon.

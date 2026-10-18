@@ -82,13 +82,23 @@ impl LogUp {
             let alpha_pows: Vec<Scalar> =
                 std::iter::successors(Some(Scalar::ONE), |p| Some(p * alpha)).take(width).collect();
 
+            let compressed: Vec<(bool, LinearCombination)> = witness
+                .into_iter()
+                .map(|(negated, x)| {
+                    let lc = x.into_iter().zip(&alpha_pows).fold(LinearCombination::from(c), |acc, (lc, a)| acc + lc * *a);
+                    (negated, lc)
+                })
+                .collect();
+            // Prover: all denominators, inverted in one batch (the verifier gets `None`).
+            let denoms: Option<Vec<Scalar>> = compressed.iter().map(|(_, lc)| cs.eval(lc)).collect();
+            let inverses = denoms.clone().map(|mut d| {
+                Scalar::batch_invert(&mut d);
+                d
+            });
+
             let mut sum = LinearCombination::default();
-            for (negated, x) in witness {
-                let compressed = x
-                    .into_iter()
-                    .zip(&alpha_pows)
-                    .fold(LinearCombination::from(c), |acc, (lc, a)| acc + lc * *a);
-                let assignment = cs.eval(&compressed).map(|v| (v.invert(), v));
+            for (k, (negated, compressed)) in compressed.into_iter().enumerate() {
+                let assignment = denoms.as_ref().zip(inverses.as_ref()).map(|(d, i)| (i[k], d[k]));
                 let (r, d, o) = cs.allocate_multiplier(assignment)?;
                 cs.constrain(d - compressed);
                 cs.constrain(o - Scalar::ONE);
