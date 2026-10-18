@@ -370,7 +370,9 @@ fn verify(path: &str, proof_path: &str) -> Result<(), String> {
         public_out.extend(var.to_words(&vals));
     }
 
-    let stmt = Statement::new(&img, num("steps")? as usize, op_counts, num("exit_code")? as u32, private_in, private_out, public_out);
+    let exit_code = u32::try_from(num("exit_code")?).map_err(|_| format!("{proof_path}: exit_code does not fit in 32 bits"))?;
+    let steps = usize::try_from(num("steps")?).map_err(|_| format!("{proof_path}: steps out of range"))?;
+    let stmt = Statement::new(&img, steps, op_counts, exit_code, private_in, private_out, public_out);
     let proof = R1CSProof::from_bytes(&unhex(get("proof")?.as_str().ok_or("proof must be a hex string")?)?)
         .map_err(|e| format!("bad proof: {e:?}"))?;
     let t = bpvm_zk::verify(&stmt, &proof).map_err(|e| format!("verifier rejected: {e:?}"))?;

@@ -170,7 +170,9 @@ uses memory-mapped I/O variables in sections `.bpvm.<kind>.<type>` (`guest/commo
 - **M4** ✅ public/private I/O with Pedersen-committed inputs and outputs (memory-mapped,
   no ecalls). Next: Rust guest crate with the same macros; hide the instruction mix (pad
   chips with dummy rows that cancel on the bus).
-- **M5** benchmarks (fib, sha256, ...), multi-threaded prover, capacity tuning.
+- **M5** ✅ benchmarks (fib, sha256, secp256k1, k256 at $2^{24}$), per-opcode costs, prover
+  memory ≈ 3x lower and an optional multi-threaded prover/verifier in the bulletproofs fork
+  (identical proofs). Open: hide the instruction mix, capacity tuning, a Rust I/O macro crate.
 - **M6** BP++ or sumcheck backend.
 
 ## Notes on the fork

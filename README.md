@@ -88,19 +88,21 @@ with volatile access.
 
 `cargo run --release -p bpvm-cli [--features parallel] -- <elf>`: execute, prove, verify
 (2026-10-18). Serial: the original single-threaded prover; parallel: the optimised fork
-(`zero-art-rs/bulletproofs` 3100919) with `--features parallel`.
+(`zero-art-rs/bulletproofs` 7cc608e) with `--features parallel`.
 
 | guest | steps | multipliers (padded) | proof | serial prove / verify | parallel prove / verify | parallel RSS |
 |---|---|---|---|---|---|---|
-| `guest/fib/fib.elf` — C, F(10) | 78 | 4 515 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.29 s / 0.04 s | |
-| `guest/balance/balance.elf` — C, 4 committed inputs, 1 committed output | 72 | 4 864 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.27 s / 0.04 s | |
-| `guest/sha256/sha256.elf` — C, SHA-256("abc"), one block | 5 904 | 314 627 ($2^{19}$) | 1729 B | 38.4 s / 7.0 s | 6.0 s / 0.59 s | 0.64 GB |
-| `guest-rs/ec-mini/ec_mini.elf` — Rust, dependency-free secp256k1 $G+2G$ (Jacobian add + check against $3G$) | 20 713 | 977 743 ($2^{20}$) | 1793 B | 92.3 s / 14.2 s (3.5 GB) | 13.8 s / 1.45 s | 1.3 GB |
-| `guest-rs/ec-add/ec_add.elf` — Rust, `k256`: $G+2G$, decode + to_affine | 253 556 | 12 407 610 ($2^{24}$) | 2049 B | did not fit in 24 GB | 210 s / 21.7 s | 10.3 GB |
+| `guest/fib/fib.elf` — C, F(10) | 78 | 4 515 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.33 s / 0.04 s | |
+| `guest/balance/balance.elf` — C, 4 committed inputs, 1 committed output | 72 | 4 864 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.36 s / 0.04 s | |
+| `guest/sha256/sha256.elf` — C, SHA-256("abc"), one block | 5 904 | 314 627 ($2^{19}$) | 1729 B | 38.4 s / 7.0 s | 4.25 s / 0.45 s | 0.48 GB |
+| `guest-rs/ec-mini/ec_mini.elf` — Rust, dependency-free secp256k1 $G+2G$ (Jacobian add + check against $3G$) | 20 713 | 977 743 ($2^{20}$) | 1793 B | 92.3 s / 14.2 s (3.5 GB) | 9.9 s / 1.12 s | 1.08 GB |
+| `guest-rs/ec-add/ec_add.elf` — Rust, `k256`: $G+2G$, decode + to_affine | 253 556 | 12 407 610 ($2^{24}$) | 2049 B | did not fit in 24 GB | 142 s / 16.9 s | 10.0 GB |
 
-Prover memory went from ≈ 3.4 KB to ≈ 1.2 KB per multiplier (chunked multiscalar
-multiplications, no generator copies in the inner-product argument, streamed $t(X)$,
-compact constraint storage), which is what made the $2^{24}$ circuit of `ec_add` provable.
+The optimised fork is also faster single-threaded (`ec_mini`: 76 s / 5.3 s). Prover memory
+went from ≈ 3.4 KB to ≈ 1 KB per multiplier, ≈ 320 B of it the generators (chunked
+multiscalar multiplications, no generator copies, the first inner-product rounds computed
+from the input generators, streamed $t(X)$, compact constraint storage), which is what made
+the $2^{24}$ circuit of `ec_add` provable.
 The verifier uses the same compact constraint storage and computes its final multiscalar
 multiplication over generator slices with the scalars computed in parallel.
 One `k256` point addition is ≈ 14.4k steps (`ec_add` − `ec_add_base`); most of the rest is
@@ -145,7 +147,7 @@ RAM word for the memory boundary (fib 0.9k, sha256 1.5k, ec_mini 9.6k with a 16 
 Measured averages: fib 45.9, sha256 53.0 (bitwise-heavy), ec_mini 46.7 per step.
 
 Rule of thumb: ≈ 50 multipliers per executed instruction; per multiplier ≈ 80 µs to prove
-and ≈ 5 µs to verify single-threaded, ≈ 14 µs and ≈ 1.5 µs with `parallel` (linear); proof
+and ≈ 5 µs to verify single-threaded, ≈ 10 µs and ≈ 1.1 µs with `parallel` (linear); proof
 $2\log_2 n + O(1)$ group elements.
 
 Hardware: MacBook Pro (Mac16,7), Apple M4 Pro (10 performance + 4 efficiency cores), 24 GB RAM,

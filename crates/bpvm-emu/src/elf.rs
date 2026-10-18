@@ -126,6 +126,8 @@ fn cstr(b: &[u8], o: usize) -> Result<&str, String> {
 }
 
 const PT_LOAD: u32 = 1;
+/// Sanity limit for one segment (a proof covers far fewer memory words anyway).
+const MAX_SEGMENT: u32 = 1 << 28;
 const PF_X: u32 = 1;
 const EM_RISCV: u16 = 243;
 
@@ -143,7 +145,7 @@ impl Image {
         if bytes.get(0..4) != Some(b"\x7fELF") {
             return Err("not an ELF file".into());
         }
-        if bytes[4] != 1 || bytes[5] != 1 {
+        if bytes.get(4..6) != Some(&[1, 1][..]) {
             return Err("expected ELF32 little-endian".into());
         }
         if u16_at(bytes, 18)? != EM_RISCV {
@@ -176,7 +178,11 @@ impl Image {
                 }
             };
             let target = if flags & PF_X != 0 { &mut img.code } else { &mut img.data };
-            let (start, end) = (vaddr & !3, (vaddr + memsz + 3) & !3);
+            if memsz > MAX_SEGMENT {
+                return Err(format!("segment of {memsz} bytes is larger than {MAX_SEGMENT}"));
+            }
+            let end = vaddr.checked_add(memsz).and_then(|e| e.checked_add(3)).ok_or("segment beyond 4 GiB")?;
+            let (start, end) = (vaddr & !3, end & !3);
             for a in (start..end).step_by(4) {
                 let w = u32::from_le_bytes([byte_at(a), byte_at(a + 1), byte_at(a + 2), byte_at(a + 3)]);
                 let e = target.entry(a).or_insert(0);
@@ -212,12 +218,15 @@ fn io_vars(b: &[u8]) -> Result<Vec<IoVar>, String> {
             continue;
         }
         let (off, size, entsize) = (sh(i, 16)? as usize, sh(i, 20)? as usize, sh(i, 36)? as usize);
+        if entsize < 16 {
+            return Err("bad symbol table entry size".into());
+        }
         let strtab = sh(sh(i, 24)? as usize, 16)? as usize;
         for k in 1..size / entsize {
             let e = off + k * entsize;
             let shndx = u16_at(b, e + 14)? as usize;
             let Some(Some((kind, ty))) = sections.get(shndx) else { continue };
-            let info = b[e + 12];
+            let info = *b.get(e + 12).ok_or("truncated ELF")?;
             if info & 0xf != 1 {
                 continue; // not STT_OBJECT
             }

@@ -48,8 +48,8 @@ cargo run --release -p bpvm-cli -- run guest-rs/ec-add/ec_add.elf          # exe
 cargo run --release -p bpvm-cli --features parallel -- guest-rs/ec-mini/ec_mini.elf
 ```
 
-`ec_mini` proves in ≈ 14 s with `parallel` (≈ 92 s single-threaded, 1.5 GB). `ec_add` is a
-$2^{24}$-multiplier circuit: ≈ 3.5 minutes to prove, 22 s to verify and ≈ 10 GB with
+`ec_mini` proves in ≈ 10 s with `parallel` (≈ 76 s single-threaded), ≈ 1.1 GB. `ec_add` is a
+$2^{24}$-multiplier circuit: ≈ 2.5 minutes to prove, 17 s to verify and ≈ 10 GB with
 `parallel`.
 
 ## The examples

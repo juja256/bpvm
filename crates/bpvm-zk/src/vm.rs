@@ -377,7 +377,8 @@ pub struct Stats {
 }
 
 /// Generators for `n` multipliers, shared across proofs and verifications in this process
-/// (deriving them is a hash-to-group per point).
+/// (deriving them is a hash-to-group per point). The cache only grows: it keeps
+/// 320 bytes per generator pair for the largest circuit seen so far.
 fn gens_for(n: usize) -> std::sync::RwLockReadGuard<'static, BulletproofGens> {
     use std::sync::{OnceLock, RwLock};
     static GENS: OnceLock<RwLock<BulletproofGens>> = OnceLock::new();

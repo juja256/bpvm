@@ -114,3 +114,20 @@ fn traps() {
         Err(Trap::MisalignedAccess { addr: 2, .. })
     ));
 }
+
+#[test]
+fn malformed_elf_is_an_error_not_a_panic() {
+    use bpvm_emu::Image;
+    let good = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../guest/fib/fib.elf"));
+    let Ok(good) = good else { return };
+    assert!(Image::from_elf(&good).is_ok());
+    for len in [0, 4, 5, 20, 52, 100, good.len() / 2, good.len() - 1] {
+        let _ = Image::from_elf(&good[..len]); // must not panic
+    }
+    let mut bad = good.clone();
+    for i in (0..bad.len()).step_by(7) {
+        bad[i] ^= 0xff;
+        let _ = Image::from_elf(&bad);
+        bad[i] ^= 0xff;
+    }
+}
