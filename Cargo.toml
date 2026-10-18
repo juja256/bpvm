@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["crates/bpvm-emu", "crates/bpvm-zk", "crates/bpvm-cli"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+bulletproofs = { git = "https://github.com/zero-art-rs/bulletproofs", features = ["yoloproofs"] }
+curve25519-dalek = { version = "4.1.3", features = ["digest", "group", "rand_core", "serde"] }
+merlin = "3"
+rand = "0.8"
+
+[profile.release]
+debug = false

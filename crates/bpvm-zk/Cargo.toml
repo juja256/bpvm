@@ -1,0 +1,15 @@
+[package]
+name = "bpvm-zk"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Bulletproofs R1CS gadgets for bpvm (reciprocal-argument lookups, ...)"
+
+[dependencies]
+bulletproofs.workspace = true
+curve25519-dalek.workspace = true
+merlin.workspace = true
+bpvm-emu = { path = "../bpvm-emu" }
+
+[dev-dependencies]
+rand.workspace = true
