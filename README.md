@@ -1,11 +1,14 @@
 # bpvm
 
-Experimental zkVM for RV32IM programs (Rust/C guests) proven with Bulletproofs R1CS and
-reciprocal-argument (logUp) lookups and memory checking. See [DESIGN.md](DESIGN.md).
+Experimental zkVM for RV32IM programs (Rust/C guests) proven with **Bulletproofs** or
+**Bulletproofs++** (chosen per proof), with reciprocal-argument (logUp) lookups and memory
+checking. The circuit is written once against the `CircuitBuilder` of the
+[bulletproofs fork](https://github.com/zero-art-rs/bulletproofs) and lowered to either proof
+system. See [DESIGN.md](DESIGN.md).
 
 ```
 crates/bpvm-emu   RV32IM interpreter recording the execution trace, ELF loader
-crates/bpvm-zk    the circuit: logUp argument, gadgets, opcode chips, CPU + memory, prove/verify
+crates/bpvm-zk    the circuit: gadgets (tables, lookups, buses), opcode chips, CPU + memory, prove/verify
 crates/bpvm-cli   `bpvm run|prove|verify <elf>`: execute, prove to a JSON proof file, verify
 guest/            C guests (fib, sha256, balance) and their runtime     -> guest/README.md
 guest-rs/         Rust guests (ec-add with k256, ec-mini) and runtime  -> guest-rs/README.md
@@ -15,6 +18,7 @@ guest-rs/         Rust guests (ec-add with k256, ec-mini) and runtime  -> guest-
 
 ```sh
 cargo run --release -p bpvm-cli -- guest/fib/fib.elf          # execute, prove, verify F(10)
+cargo run --release -p bpvm-cli -- --backend bppp guest/fib/fib.elf   # the same with BP++
 cargo run --release -p bpvm-cli -- run guest-rs/ec-add/ec_add.elf   # execute only
 cargo test --release
 ```
@@ -25,19 +29,30 @@ The example ELFs are committed. To rebuild them or write your own guest see
 
 `--features parallel` (on `bpvm-cli` or `bpvm-zk`) enables the multi-threaded prover and
 verifier of the bulletproofs fork (rayon); proofs are identical to the serial ones.
+`--features bppp-vartime` computes the BP++ norm argument in variable time (its inputs are
+uniformly random; same proofs, ≈ 13% faster proving); constant time is the default.
+
+**Backends.** `--backend bp` (default) is Bulletproofs: upstream protocol, logUp over
+randomized constraints. `--backend bppp` is Bulletproofs++ (ePrint 2022/510, experimental,
+not audited): lookups, the bus and the memory argument are native reciprocal arguments, so a
+CPU row costs 22 gates instead of 35.5 multipliers; proofs are 400 B smaller and verification
+is faster single-threaded. The verifier reads the backend from the proof (`verify --backend`
+requires one).
 
 Command line:
 
 ```
 bpvm run    <elf> [-i input.json]                                   execute only
-bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json]  execute and prove
-bpvm verify <elf> <proof.json>                                     verify
-bpvm [--no-prove] <elf> [-i input.json]       demo: prove, verify, reject a forged exit code
+bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp]
+bpvm verify <elf> <proof.json> [--backend bp|bppp]
+bpvm [--no-prove] [--backend bp|bppp] <elf> [-i input.json]
+                                              demo: prove, verify, reject a forged exit code
 ```
 
 Developer examples (`cargo run --release -p bpvm-zk --example <name>`): `op_costs`
-(multipliers per opcode), `linear_cost` (cost of linear constraints), `mem_profile <elf>`
-(heap per prover stage), `r1cs_scaling` (prover/verifier time vs circuit size).
+(BP multipliers and BP++ gates per opcode), `linear_cost` (cost of linear constraints),
+`mem_profile <elf> [bp|bppp]` (heap per prover stage), `r1cs_scaling` (prover/verifier time
+vs circuit size).
 
 ## Inputs and outputs, Pedersen commitments
 
@@ -86,69 +101,109 @@ with volatile access.
 
 ## Benchmarks
 
-`cargo run --release -p bpvm-cli [--features parallel] -- <elf>`: execute, prove, verify
-(2026-10-18). Serial: the original single-threaded prover; parallel: the optimised fork
-(`zero-art-rs/bulletproofs` 7cc608e) with `--features parallel`.
+`cargo run --release -p bpvm-cli [--features parallel] -- --backend bp|bppp <elf>`: execute,
+prove, verify (2026-10-19, bulletproofs fork branch `bppp-bpvm`, `c20c5bf`). BP size is in
+multipliers (padded to a power of two); BP++ size is gates $N_p + N_m$ plus linear slots
+$N_{lin}$ (free witnesses, multiplicities and copies; they cost no gate but lengthen the
+commitments).
 
-| guest | steps | multipliers (padded) | proof | serial prove / verify | parallel prove / verify | parallel RSS |
-|---|---|---|---|---|---|---|
-| `guest/fib/fib.elf` — C, F(10) | 78 | 4 515 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.33 s / 0.04 s | |
-| `guest/balance/balance.elf` — C, 4 committed inputs, 1 committed output | 72 | 4 864 ($2^{13}$) | 1345 B | 0.63 s / 0.11 s | 0.36 s / 0.04 s | |
-| `guest/sha256/sha256.elf` — C, SHA-256("abc"), one block | 5 904 | 314 627 ($2^{19}$) | 1729 B | 38.4 s / 7.0 s | 4.25 s / 0.45 s | 0.48 GB |
-| `guest-rs/ec-mini/ec_mini.elf` — Rust, dependency-free secp256k1 $G+2G$ (Jacobian add + check against $3G$) | 20 713 | 977 743 ($2^{20}$) | 1793 B | 92.3 s / 14.2 s (3.5 GB) | 9.9 s / 1.12 s | 1.08 GB |
-| `guest-rs/ec-add/ec_add.elf` — Rust, `k256`: $G+2G$, decode + to_affine | 253 556 | 12 407 610 ($2^{24}$) | 2049 B | did not fit in 24 GB | 142 s / 16.9 s | 10.0 GB |
+| guest | steps | backend | size | proof | serial prove / verify | parallel prove / verify | parallel RSS |
+|---|---|---|---|---|---|---|---|
+| `guest/fib/fib.elf` — C, F(10) | 78 | BP | 4 424 ($2^{13}$) | 1345 B | 0.48 s / 40 ms | 0.35 s / 38 ms | |
+| | | BP++ | 2 450 + 1 683 | 945 B | 0.34 s / 26 ms | 0.31 s / 24 ms | |
+| `guest/balance/balance.elf` — C, 4 committed inputs, 1 committed output | 72 | BP | 4 769 ($2^{13}$) | 1345 B | 0.49 s / 41 ms | | |
+| | | BP++ | 2 368 + 2 579 | 977 B | 0.41 s / 32 ms | | |
+| `guest/sha256/sha256.elf` — C, SHA-256("abc"), one block | 5 904 | BP | 314 536 ($2^{19}$) | 1729 B | 30.5 s / 2.47 s | 4.81 s / 0.44 s | 0.50 GB |
+| | | BP++ | 178 651 + 105 359 | 1329 B | 22.8 s / 1.24 s | 4.12 s / 0.76 s | 0.75 GB |
+| `guest-rs/ec-mini/ec_mini.elf` — Rust, dependency-free secp256k1 $G+2G$ (Jacobian add + check against $3G$) | 20 713 | BP | 977 716 ($2^{20}$) | 1793 B | 75.7 s / 5.23 s | 11.9 s / 1.11 s | 1.13 GB |
+| | | BP++ | 578 989 + 263 047 | 1457 B | 69.9 s / 3.71 s | 12.4 s / 2.27 s (10.8 s vt) | 2.14 GB |
+| `guest-rs/ec-add/ec_add.elf` — Rust, `k256`: $G+2G$, decode + to_affine | 253 556 | BP | 12 407 583 ($2^{24}$) | 2049 B | did not fit in 24 GB | 166 s / 16.4 s | 10.1 GB |
+| | | BP++ | 7 262 452 + 3 529 272 | 1649 B | | 159 s / 32.0 s | 8.5 GB |
 
-The optimised fork is also faster single-threaded (`ec_mini`: 76 s / 5.3 s). Prover memory
-went from ≈ 3.4 KB to ≈ 1 KB per multiplier, ≈ 320 B of it the generators (chunked
-multiscalar multiplications, no generator copies, the first inner-product rounds computed
-from the input generators, streamed $t(X)$, compact constraint storage), which is what made
-the $2^{24}$ circuit of `ec_add` provable.
-The verifier uses the same compact constraint storage and computes its final multiscalar
-multiplication over generator slices with the scalars computed in parallel.
+BP++ proofs are 400 B smaller at every size, and BP++ proves with 40% fewer gates. It proves
+faster than BP: single-threaded on every guest, and multi-threaded except `ec_mini` (12.4 s
+against 11.9 s; 10.8 s with `bppp-vartime`). It verifies faster single-threaded (2x on
+sha256). Multi-threaded, its verifier is slower: compiling the reciprocal form circuit, the
+circuit digest and the structure checks are still sequential in the fork, and they dominate
+at $2^{24}$. On mid-size circuits BP++ needs more memory (gates and linear slots each carry a
+generator).
+`vt` is `--features bppp-vartime`. Single-threaded BP++ RSS is not shown; it was measured
+while other jobs ran.
+
+The fork's serial code is also faster than the original prover (`ec_mini`: 76 s / 5.3 s
+against 92 s / 14 s). Prover memory went from ≈ 3.4 KB to ≈ 1 KB per BP multiplier, ≈ 320 B
+of it the generators. The changes: chunked multiscalar multiplications, no generator copies,
+the first inner-product rounds computed from the input generators, a streamed $t(X)$ and
+compact constraint storage. This is what made the $2^{24}$ circuit of `ec_add` provable.
+The BP verifier uses the same compact constraint storage. It computes its final
+multiscalar multiplication over generator slices, with the scalars computed in parallel.
 One `k256` point addition is ≈ 14.4k steps (`ec_add` − `ec_add_base`); most of the rest is
 the field inversion in `to_affine` ($2G$ is decoded from uncompressed SEC1, which only checks
 the curve equation).
 
-### Multipliers per instruction
+### Cost per instruction
 
 `cargo run --release -p bpvm-zk --example op_costs` measures the circuit itself:
-$\text{size}(\text{capacity } n+16) - \text{size}(n)$, divided by 16 (two single
-allocations share one multiplier, hence the halves). Every instruction pays the **CPU row,
-35.5 multipliers**: fetch lookup 1, 14 witness cells 7, register write select 1,
-`rd` range check 6, three timestamp range checks 13.5, six memory tuples 6, bus 1. The
-opcode chip comes on top:
+$\text{size}(\text{capacity } n+16) - \text{size}(n)$, divided by 16.
 
-| opcodes | chip | total |
+On BP, two single witnesses share one multiplier, hence the halves. Every instruction pays
+the **CPU row: 35.5 multipliers on BP, 22 gates (+ 6 linear slots) on BP++**. On BP, the row
+is made of:
+- fetch lookup: 1;
+- 14 witness cells: 7;
+- register write select: 1;
+- `rd` range check: 6;
+- three timestamp range checks: 13.5;
+- six memory tuples: 6;
+- bus: 1.
+
+On BP++, free witnesses and lookup multiplicities take no gate. Each reciprocal term (lookup,
+memory tuple, bus tuple) is one gate. The opcode chip comes on top:
+
+| opcodes | BP chip | BP total | BP++ chip | BP++ total (gates + linear) |
+|---|---|---|---|---|
+| `LUI`, `FENCE`, `ECALL` | 4.5 | 40 | 1 | 23 + 12 |
+| `ADD`, `SUB`, `ADDI`, `AUIPC`, `JAL` | 5.5 | 41 | 2 | 24 + 12 |
+| `JALR` | 6.5 | 42 | 3 | 25 + 12 |
+| `BEQ`, `BNE` | 9.5 | 45 | 5 | 27 + 14 |
+| `SLTU`, `SLTIU` | 11.5 | 47 | 6 | 28 + 12 |
+| `MUL`, `MULHU` | 12 | 47.5 | 6 | 28 + 13 |
+| `BLTU`, `BGEU` | 13.5 | 49 | 8 | 30 + 12 |
+| `LW` / `SW` | 19 / 19.5 | 54.5 / 55 | 11 / 11 | 33 + 12 / 33 + 13 |
+| `MULHSU` | 20 | 55.5 | 12 | 34 + 13 |
+| `SLL`, `SLLI` | 20.5 | 56 | 11 | 33 + 15 |
+| `DIVU`, `REMU` | 23 | 58.5 | 14 | 36 + 15 |
+| `XOR`, `OR`, `AND` (+ `I`) | 24.5 | 60 | 9 | 31 + 28 |
+| `SLT`, `SLTI` | 25.5 | 61 | 16 | 38 + 12 |
+| `SRL`, `SRLI` | 26.5 | 62 | 15 | 37 + 15 |
+| `MULH` | 27 | 62.5 | 17 | 39 + 13 |
+| `BLT`, `BGE` / `LHU` | 27.5 | 63 | 18 / 17 | 40 + 12 / 39 + 13 |
+| `LH` / `LBU` / `LB` | 31.5 / 33.5 / 36 | 67 / 69 / 71.5 | 20 / 23 / 25 | 42 / 45 / 47 + 13 |
+| `SH` / `SB` | 34.5 / 40.5 | 70 / 76 | 21 / 27 | 43 / 49 + 15 |
+| `SRA`, `SRAI` | 36.5 | 72 | 22 | 44 + 17 |
+| `DIV`, `REM` | 55 | 90.5 | 38 | 60 + 19 |
+
+The expensive opcodes are signed comparison, bitwise ops (8 nibble lookups), sub-word memory
+access and signed division. Bitwise ops gain the most on BP++: 24.5 → 9.
+
+The fixed part is the lookup multiplicities plus ≈ 2 multipliers per RAM word for the memory
+boundary:
+
+| | BP multipliers | BP++ gates |
 |---|---|---|
-| `LUI`, `FENCE`, `ECALL` | 4.5 | 40 |
-| `ADD`, `SUB`, `ADDI`, `AUIPC`, `JAL` | 5.5 | 41 |
-| `JALR` | 6.5 | 42 |
-| `BEQ`, `BNE` | 9.5 | 45 |
-| `SLTU`, `SLTIU` | 11.5 | 47 |
-| `MUL`, `MULHU` | 12 | 47.5 |
-| `BLTU`, `BGEU` | 13.5 | 49 |
-| `LW` / `SW` | 19 / 19.5 | 54.5 / 55 |
-| `MULHSU` | 20 | 55.5 |
-| `SLL`, `SLLI` | 20.5 | 56 |
-| `DIVU`, `REMU` | 23 | 58.5 |
-| `XOR`, `OR`, `AND` (+ `I`) | 24.5 | 60 |
-| `SLT`, `SLTI` | 25.5 | 61 |
-| `SRL`, `SRLI` | 26.5 | 62 |
-| `MULH` | 27 | 62.5 |
-| `BLT`, `BGE`, `LHU` | 27.5 | 63 |
-| `LH` / `LBU` / `LB` | 31.5 / 33.5 / 36 | 67 / 69 / 71.5 |
-| `SH` / `SB` | 34.5 / 40.5 | 70 / 76 |
-| `SRA`, `SRAI` | 36.5 | 72 |
-| `DIV`, `REM` | 55 | 90.5 |
+| fib | 0.8k | 0.3k |
+| sha256 | 1.4k | 0.4k |
 
-Signed comparison, bitwise ops (8 nibble lookups), sub-word memory access and signed
-division are the expensive ones. Fixed part: lookup multiplicities and ≈ 2 multipliers per
-RAM word for the memory boundary (fib 0.9k, sha256 1.5k, ec_mini 9.6k with a 16 KB stack).
-Measured averages: fib 45.9, sha256 53.0 (bitwise-heavy), ec_mini 46.7 per step.
+Measured averages per step:
 
-Rule of thumb: ≈ 50 multipliers per executed instruction; per multiplier ≈ 80 µs to prove
-and ≈ 5 µs to verify single-threaded, ≈ 10 µs and ≈ 1.1 µs with `parallel` (linear); proof
-$2\log_2 n + O(1)$ group elements.
+| | BP multipliers | BP++ gates + linear slots |
+|---|---|---|
+| fib | 45.9 | 27.3 + 12.4 |
+| sha256 (bitwise-heavy) | 53.0 | 30.2 + 17.5 |
+
+Rule of thumb for BP: ≈ 50 multipliers per executed instruction; per multiplier, single-threaded ≈ 80 µs to prove and
+≈ 5 µs to verify, ≈ 10 µs and ≈ 1.1 µs with `parallel` (linear); proof
+$2\log_2 n + O(1)$ group elements. For BP++: ≈ 30 gates per instruction, 400 B smaller proofs.
 
 Hardware: MacBook Pro (Mac16,7), Apple M4 Pro (10 performance + 4 efficiency cores), 24 GB RAM,
 macOS 26.6; `rustc 1.99.1`, release profile; `parallel` uses all cores via rayon.

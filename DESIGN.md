@@ -1,9 +1,16 @@
 # bpvm — design notes
 
-A zkVM for RV32IM on top of Bulletproofs R1CS (`zero-art-rs/bulletproofs`, a fork of
-`zkcrypto/bulletproofs` with the two-phase randomized constraints and a reciprocal-argument
-example). Guests are Rust/C programs compiled to `riscv32im`; the prover executes the ELF,
-records the trace and proves it in one R1CS instance.
+A zkVM for RV32IM on top of the bulletproofs fork `zero-art-rs/bulletproofs` (a fork of
+`zkcrypto/bulletproofs` with two-phase randomized constraints, a Bulletproofs++ backend and a
+circuit builder with lookups and reciprocal arguments). Guests are Rust/C programs compiled
+to `riscv32im`; the prover executes the ELF, records the trace and proves it in one circuit,
+with Bulletproofs (R1CS + logUp) or Bulletproofs++ (reciprocal form circuit), chosen per
+proof.
+
+Status (2026-10-19): **M6 done**: the circuit is written against the fork's
+`CircuitBuilder` and proven with either backend (`bpvm --backend bp|bppp`); BP++ proofs
+are 400 B smaller, a CPU row costs 22 gates instead of 35.5 multipliers (README,
+Benchmarks).
 
 Status (2026-10-18): **toy VM complete for RV32IM** — a C program (`guest/fib/fib.c`, F(10))
 compiles with clang/lld, runs, and its execution is proven and verified end to end:
@@ -11,29 +18,38 @@ compiles with clang/lld, runs, and its execution is proven and verified end to e
 ```
 $ make -C guest && cargo run --release -p bpvm-cli -- guest/fib/fib.elf
 executed 78 steps, exit code 55
-proved:   4515 multipliers (padded to 8192), proof 1345 bytes, 0.63 s
-verified: program halts with exit code 55 after 78 steps (0.11 s)
+proved:   bp, 4424 multipliers (padded to 8192), proof 1345 bytes, 484.81ms
+verified: program halts with exit code 55 after 78 steps (39.91ms)
 sanity:   the same proof is rejected for exit code 54
+$ cargo run --release -p bpvm-cli -- --backend bppp guest/fib/fib.elf
+proved:   bppp, 2450 gates, 1683 linear slots, proof 945 bytes, 344.41ms
+verified: program halts with exit code 55 after 78 steps (25.87ms)
 ```
 
-Measured average ≈ 50 multipliers per executed instruction (866-step ALU test: 41.8k
-multipliers, 4.9 s prove) including the fixed table costs.
+Measured average ≈ 50 BP multipliers or ≈ 30 BP++ gates per executed instruction (866-step
+ALU test: 41.7k multipliers or 23.2k gates) including the fixed table costs (2026-10-19).
 
 ## 0. What is implemented
 
 - `bpvm-emu`: RV32IM interpreter with trace, ELF32 loader, test assembler.
-- `bpvm-zk::logup`: one signed reciprocal-sum argument (`LogUp`) used for lookups (`Lookup`
-  with committed multiplicities), the CPU→chip bus and memory consistency.
-- `bpvm-zk::gadgets`: range checks by byte digits (one $(x,k)$ table for all partial ranges),
-  booleans, `is_zero`, sign bit, unsigned/signed comparison, nibble XOR/OR/AND, shift powers.
+- `bpvm-zk::gadgets` (`Env`): the fork's `CircuitBuilder` operations — public tables and
+  lookups (committed multiplicities, shared per table), and two reciprocal arguments: the
+  CPU→chip bus and memory consistency. Gadgets: range checks by byte digits (one
+  one-column table per digit width $k \le 8$), booleans, `is_zero`, sign bit,
+  unsigned/signed comparison, nibble XOR/OR/AND, shift powers. Until 2026-10-19 bpvm had its
+  own `LogUp`/`Lookup` over randomized constraints; the fork's BP lowering is a port of it.
 - `bpvm-zk::chips`: all 47 RV32IM opcodes (incl. signed division with the
   $-2^{31}/-1$ overflow and division by zero, `MULH`/`MULHSU`, `SRA`, byte/half loads and
   stores at every offset).
 - `bpvm-zk::vm`: statement, witness generation, CPU chip, memory boundary, prove/verify;
   the statement is absorbed into the transcript (strong Fiat–Shamir).
-- Tests: ISA coverage on edge values, `fib.elf`, and five tampered traces (wrong ADD/DIV
-  result, wrong loaded value, wrong branch, skipped step) proven by a cheating prover
-  (`logup::set_unchecked_prover`) — all rejected by the verifier.
+- Tests, all on both backends: ISA coverage on edge values, `fib.elf`, committed I/O, and
+  six tampered statements proven by a cheating prover (the fork's testing feature `cheats`,
+  `bulletproofs::r1cs::cheats::set_unchecked_prover`), all rejected by the verifier. The
+  tampers: wrong ADD/DIV result, wrong loaded value, wrong branch, skipped step, and a
+  program other than the executed one (only the fetch lookup sees it). Gadget tests check
+  digits outside their tables and wrong bitwise results; CLI tests check malformed proof
+  files.
 
 - Guest I/O (`guest/common/bpvm.h`): public inputs patch the RAM image; private inputs and
   outputs are bound to Pedersen commitments through the memory boundary (`vm.rs`, I/O in the
@@ -105,14 +121,20 @@ powers of two if that matters.
 
 ## 3. Reciprocal-argument building blocks (`bpvm-zk`)
 
-**Lookup into a public table** (`Lookup`, done). Queries $q_k$ (phase-1 tuples) and
+Since M6 these are the builder operations of the bulletproofs fork (`table`, `lookup`,
+`lookup_value`, `reciprocal`; spec `docs/bppp/spec.md` §7 there). They are lowered to BP
+as below (logUp over randomized constraints, one multiplier per private term), or to a BP++
+reciprocal form circuit. On BP++ tuples are compressed with a challenge $\eta$ after
+$C_O$, a private term costs one gate, and free witnesses and multiplicities cost none.
+
+**Lookup into a public table** (done). Queries $q_k$ (phase-1 tuples) and
 multiplicities $m_i$ are committed in phase 1; after challenges $\alpha, c$:
 $$\sum_k \frac{1}{c+\langle\alpha,q_k\rangle} = \sum_i \frac{m_i}{c+\langle\alpha,t_i\rangle}.$$
 Cost: 1 multiplier per query + $|T|/2$ multipliers for the multiplicities; the table side is
 a linear combination with public coefficients. The name and idea come from Bulletproofs++
 (Eagen–Kanjalkar–Ruffing–Nick 2022); logUp (Haböck 2022) is the same identity.
 
-**Bus / multiset equality** (next): as above but both sides are committed tuples with
+**Bus / multiset equality** (done): as above but both sides are committed tuples with
 multiplicity $\pm 1$:
 $\sum_{\text{send}} 1/(c+\langle\alpha,s\rangle) = \sum_{\text{recv}} 1/(c+\langle\alpha,r\rangle)$,
 1 multiplier per tuple on each side.
@@ -155,9 +177,10 @@ uses memory-mapped I/O variables in sections `.bpvm.<kind>.<type>` (`guest/commo
 
 ## 6. Backend outlook
 
-- **Bulletproofs++ arithmetic circuits** have the reciprocal argument built in and a norm
-  argument that roughly halves the proof and cuts prover work; `secp256k1-zkp` has BP++ range
-  proofs. Natural upgrade path.
+- **Bulletproofs++** (done, M6): the reciprocal argument is built in. Measured: proofs
+  400 B smaller, 40% fewer gates. Proving is faster single-threaded and about equal
+  multi-threaded. Verification is faster single-threaded but slower multi-threaded at
+  $2^{24}$, because compilation and checks are still sequential in the fork.
 - **Sumcheck + IPA** (Spartan/Jolt with a Hyrax or Bulletproofs-IPA polynomial commitment)
   exploits the uniformity of the CPU chip: the prover stays DL-only and transparent, and
   verifier work drops from $O(n)$ circuit evaluation to sumcheck plus one MSM.
@@ -173,12 +196,15 @@ uses memory-mapped I/O variables in sections `.bpvm.<kind>.<type>` (`guest/commo
 - **M5** ✅ benchmarks (fib, sha256, secp256k1, k256 at $2^{24}$), per-opcode costs, prover
   memory ≈ 3x lower and an optional multi-threaded prover/verifier in the bulletproofs fork
   (identical proofs). Open: hide the instruction mix, capacity tuning, a Rust I/O macro crate.
-- **M6** BP++ or sumcheck backend.
+- **M6** ✅ BP++ backend: the circuit on the fork's `CircuitBuilder`, `--backend bp|bppp`,
+  tests and tampers on both backends, benchmarks. Open: parallel compilation and checks in
+  the BP++ verifier, BP++ prover memory, a sumcheck backend.
 
 ## Notes on the fork
 
 - `tests/reciprocal.rs::get_multiplicities` hardcodes `n = 64` instead of the `n` parameter
   (wrong multiplicities when `n != 64`).
-- The reciprocal table side needs one inverse per table row: batch-invert (done in `Lookup`).
+- The reciprocal table side needs one inverse per table row: batch-invert (done in the
+  fork's BP lowering; its BP++ prover batch-inverts the reciprocals too).
 - Range of multiplicities is not checked; fine as long as the number of queries is below the
   field characteristic.
