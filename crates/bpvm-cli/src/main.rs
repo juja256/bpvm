@@ -4,14 +4,14 @@
 //! bpvm run    <elf> [-i input.json]                                   execute only
 //! bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp]
 //!                                                                     execute and prove
-//! bpvm verify <elf> <proof.json>                                     verify
+//! bpvm verify <elf> <proof.json> [--backend bp|bppp]                verify
 //! bpvm [--no-prove] [--backend bp|bppp] <elf> [-i input.json]
 //!                                               demo: prove, verify, reject a forged exit code
 //! ```
 //!
 //! `--backend` picks the proof system: `bp` (Bulletproofs, the default) or `bppp`
 //! (Bulletproofs++, experimental: smaller proofs, faster verification). The verifier reads the
-//! backend from the proof.
+//! backend from the proof and accepts either, unless `verify --backend` requires one.
 //!
 //! The input file maps the guest's input variables (see `guest/common/bpvm.h`) to values:
 //! a number, a decimal or `0x` hex string, an array of those, or (for `uint8_t` arrays) a
@@ -33,10 +33,12 @@ use curve25519_dalek::scalar::Scalar;
 use serde_json::{json, Map, Value};
 
 const MAX_STEPS: u64 = 1 << 20;
+/// Version of the proof file; 2: the circuit of the CircuitBuilder port (BP or BP++).
+const PROOF_FILE_VERSION: u64 = 2;
 const USAGE: &str = "usage:
   bpvm run    <elf> [-i input.json]
   bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp]
-  bpvm verify <elf> <proof.json>
+  bpvm verify <elf> <proof.json> [--backend bp|bppp]
   bpvm [--no-prove] [--backend bp|bppp] <elf> [-i input.json]";
 
 struct Args {
@@ -89,7 +91,7 @@ fn main() -> ExitCode {
                 let sec = a.flags.get("-s").cloned().unwrap_or(format!("{stem}.secrets.json"));
                 run(&p[1], a.flags.get("-i"), Mode::Prove { out, sec }, backend)
             }
-            Some("verify") if p.len() == 3 => verify(&p[1], &p[2]),
+            Some("verify") if p.len() == 3 => verify(&p[1], &p[2], a.flags.contains_key("--backend").then_some(backend)),
             Some(_) if p.len() == 1 => run(&p[0], a.flags.get("-i"), if a.no_prove { Mode::Run } else { Mode::Demo }, backend),
             _ => Err(USAGE.into()),
         }
@@ -323,7 +325,7 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend) -> Resu
             };
             let op_counts: Map<String, Value> = stmt.op_counts.iter().map(|(op, n)| (format!("{op:?}"), json!(n))).collect();
             let proof_file = json!({
-                "bpvm": 1,
+                "bpvm": PROOF_FILE_VERSION,
                 "backend": backend_name(backend),
                 "steps": stmt.steps,
                 "exit_code": stmt.exit_code,
@@ -348,12 +350,27 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend) -> Resu
 
 // ---------- verify ----------
 
-fn verify(path: &str, proof_path: &str) -> Result<(), String> {
+/// `require`: the backend the proof must use (`--backend`); any if `None`.
+fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), String> {
     let mut img = load(path)?;
     let f = read_json(proof_path)?;
     let get = |k: &str| f.get(k).ok_or(format!("{proof_path}: missing {k:?}"));
     let obj = |k: &str| get(k).and_then(|v| v.as_object().cloned().ok_or(format!("{proof_path}: {k:?} must be an object")));
     let num = |k: &str| get(k).and_then(|v| v.as_u64().ok_or(format!("{proof_path}: {k:?} must be a number")));
+
+    let version = num("bpvm")?;
+    if version != PROOF_FILE_VERSION {
+        return Err(format!("{proof_path}: proof file version {version}, this bpvm reads version {PROOF_FILE_VERSION}"));
+    }
+    let proof = R1CSProof::from_bytes(&unhex(get("proof")?.as_str().ok_or("proof must be a hex string")?)?)
+        .map_err(|e| format!("bad proof: {e:?}"))?;
+    let named = get("backend")?.as_str().ok_or(format!("{proof_path}: \"backend\" must be a string"))?;
+    if named != backend_name(proof.backend()) {
+        return Err(format!("{proof_path}: the file says backend {named:?}, the proof is {:?}", backend_name(proof.backend())));
+    }
+    if let Some(b) = require.filter(|b| *b != proof.backend()) {
+        return Err(format!("{proof_path}: a {} proof, but --backend {} was required", backend_name(proof.backend()), backend_name(b)));
+    }
 
     let mut op_counts = BTreeMap::new();
     for (name, n) in obj("op_counts")? {
@@ -397,17 +414,18 @@ fn verify(path: &str, proof_path: &str) -> Result<(), String> {
     }
 
     let exit_code = u32::try_from(num("exit_code")?).map_err(|_| format!("{proof_path}: exit_code does not fit in 32 bits"))?;
-    let steps = usize::try_from(num("steps")?).map_err(|_| format!("{proof_path}: steps out of range"))?;
+    // The verifier builds a circuit of this size: bound it before synthesis.
+    let steps = num("steps")?;
+    if steps == 0 || steps > MAX_STEPS {
+        return Err(format!("{proof_path}: steps must be in 1..={MAX_STEPS}"));
+    }
+    let steps = steps as usize;
+    if op_counts.values().try_fold(0usize, |acc, n| acc.checked_add(*n)) != Some(steps) {
+        return Err(format!("{proof_path}: the op counts do not add up to the steps"));
+    }
     let stmt = Statement::new(&img, steps, op_counts, exit_code, private_in, private_out, public_out);
-    let proof = R1CSProof::from_bytes(&unhex(get("proof")?.as_str().ok_or("proof must be a hex string")?)?)
-        .map_err(|e| format!("bad proof: {e:?}"))?;
     let t = bpvm_zk::verify(&stmt, &proof).map_err(|e| format!("verifier rejected: {e:?}"))?;
 
-    if let Some(b) = f.get("backend").and_then(Value::as_str) {
-        if b != backend_name(proof.backend()) {
-            return Err(format!("{proof_path}: the file says backend {b:?}, the proof is {:?}", backend_name(proof.backend())));
-        }
-    }
     println!("verified ({t:.2?}, {}): {path} halts with exit code {} after {} steps", backend_name(proof.backend()), stmt.exit_code, stmt.steps);
     for (k, v) in &public_in {
         println!("  public input   {k} = {v}");

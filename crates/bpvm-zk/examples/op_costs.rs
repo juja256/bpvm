@@ -1,8 +1,11 @@
 //! Cost per opcode, per CPU row and fixed, measured on the circuit itself:
 //! cost(op) = (size(capacity n+K) − size(n)) / K, so one-off table costs are excluded.
 //! Three measures: BP multipliers (two single witnesses share one multiplier, so rows can
-//! cost half-integers), BP++ gates ($N_p + N_m$) and BP++ linear slots ($N_{lin}$: free
-//! witnesses, multiplicities and copies, which cost no gate but lengthen the commitments).
+//! cost half-integers), BP++ gates ($N_p + N_m$) and BP++ linear slots ($N_{lin}$: the free
+//! witnesses, multiplicities and copies that do not fit into the gates' spare output slots;
+//! they cost no gate but lengthen the commitments). $N_{lin}$ is net of the gates, so an
+//! opcode's linear delta can be negative and the additive model holds only once
+//! $N_{lin} > 0$.
 //! `cargo run --release -p bpvm-zk --example op_costs [guest.elf ...]`
 
 use bpvm_emu::{Image, Machine};

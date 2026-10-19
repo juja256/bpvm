@@ -3,7 +3,7 @@
 use bpvm_zk::gadgets::{lc, s, Env, TAG_AND, TAG_OR, TAG_XOR};
 use bpvm_zk::isa::PROG_WIDTH;
 use bpvm_zk::Backend;
-use bulletproofs::r1cs::{CircuitBuilder, Cost, Prover, R1CSError, R1CSProof, Verifier};
+use bulletproofs::r1cs::{CircuitBuilder, ConstraintSystem, Cost, Prover, R1CSError, R1CSProof, Verifier};
 use bulletproofs::{BulletproofGens, PedersenGens};
 use merlin::Transcript;
 
@@ -69,11 +69,56 @@ fn range_checks_verify() {
 /// Out of range: the digits of `value mod 2^bits` do not add up to `value`, so the proof
 /// (the prover does not refuse a violated linear constraint) must not verify.
 #[test]
-fn out_of_range_values_do_not_verify() {
+fn range_digits_must_sum_to_the_value() {
     for backend in BACKENDS {
         for (v, bits) in [(2u64, 1), (1 << 32, 32), (1 << 24, 24), (8, 3)] {
             let (proof, _) = unchecked(|| prove(backend, |cs| range(cs, Some(v), bits))).unwrap();
             assert!(verify(&proof, |cs| range(cs, None, bits)).is_err(), "{backend:?} {v} {bits}");
+        }
+    }
+}
+
+/// `x = d` with `d` a lookup into the `k`-bit table: the linear relation holds, only the
+/// lookup can catch `x = 2^k`.
+fn digit<CS: CircuitBuilder>(cs: &mut CS, k: u32, x: u64, prover: bool) -> Result<(), R1CSError> {
+    let e = env(cs)?;
+    let t = e.range_table(k);
+    let d = e.cs.lookup_value(t, prover.then_some(x))?;
+    e.cs.constrain(lc(d) - s(x));
+    e.finish()
+}
+
+#[test]
+fn digits_outside_their_table_are_rejected() {
+    for backend in BACKENDS {
+        for k in 1..=8 {
+            let (proof, _) = prove(backend, |cs| digit(cs, k, (1 << k) - 1, true)).unwrap();
+            verify(&proof, |cs| digit(cs, k, (1 << k) - 1, false)).unwrap();
+            assert!(prove(backend, |cs| digit(cs, k, 1 << k, true)).is_err(), "{backend:?} k = {k}: honest prover");
+            let (proof, _) = unchecked(|| prove(backend, |cs| digit(cs, k, 1 << k, true))).unwrap();
+            assert!(verify(&proof, |cs| digit(cs, k, 1 << k, false)).is_err(), "{backend:?} k = {k}: a digit 2^k verified");
+        }
+    }
+}
+
+/// `x < 2^bits` with the prover's digits given: `x` equals their weighted sum, but one digit
+/// is outside its table (a 3-bit digit 8, an 8-bit digit 256), so only the lookup catches it.
+fn range_with_digits<CS: CircuitBuilder>(cs: &mut CS, x: u64, digits: &[u64], bits: u32, prover: bool) -> Result<(), R1CSError> {
+    let mut e = env(cs)?;
+    let xv = e.alloc(prover.then_some(x))?;
+    e.range_digits(xv.into(), prover.then(|| digits.to_vec()), bits)?;
+    e.finish()
+}
+
+#[test]
+fn range_digits_outside_their_tables_are_rejected() {
+    // (x, digits, bits): 8 = 8 (3 bits); 2^11 + 3 = 3 + 8·2^8 (11 bits); 2^16 = 0 + 256·2^8 (16 bits)
+    let cases: [(u64, &[u64], u32); 3] = [(8, &[8], 3), ((1 << 11) + 3, &[3, 8], 11), (1 << 16, &[0, 256], 16)];
+    for backend in BACKENDS {
+        for (x, digits, bits) in cases {
+            assert!(prove(backend, |cs| range_with_digits(cs, x, digits, bits, true)).is_err(), "{backend:?} {x}: honest prover");
+            let (proof, _) = unchecked(|| prove(backend, |cs| range_with_digits(cs, x, digits, bits, true))).unwrap();
+            assert!(verify(&proof, |cs| range_with_digits(cs, x, digits, bits, false)).is_err(), "{backend:?} {x}: verified");
         }
     }
 }
@@ -103,13 +148,17 @@ fn wrong_bitwise_results_are_rejected() {
     }
 }
 
-/// The verifier rebuilds its own circuit: a proof for one width does not verify another.
+/// The verifier rebuilds its own circuit: a proof for one width does not verify another
+/// (different shapes), nor an XOR proof an OR statement (same shape, other contents).
 #[test]
 fn proofs_are_bound_to_the_circuit() {
+    let (a, b) = (0xa5c3_0ff1u32, 0x3c5a_f00fu32);
     for backend in BACKENDS {
         let (proof, _) = prove(backend, |cs| range(cs, Some(7), 8)).unwrap();
         assert!(verify(&proof, |cs| range(cs, None, 7)).is_err());
         assert!(verify(&proof, |cs| range(cs, None, 16)).is_err());
+        let (proof, _) = prove(backend, |cs| bitop(cs, TAG_XOR, a, b, a ^ b, true)).unwrap();
+        assert!(verify(&proof, |cs| bitop(cs, TAG_OR, a, b, a ^ b, false)).is_err(), "{backend:?}");
     }
 }
 

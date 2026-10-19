@@ -40,6 +40,8 @@ pub const TAG_AND: u64 = 2;
 
 /// Digits of range checks are at most this many bits (one table per width up to it).
 pub const DIGIT_BITS: u32 = 8;
+// Loads and stores read the digits of `range32` as the four bytes of a word.
+const _: () = assert!(DIGIT_BITS == 8);
 
 /// Rows $(s, 2^s)$ for $s < 32$.
 fn pow_rows() -> Vec<Vec<u64>> {
@@ -57,6 +59,12 @@ fn bitop_rows() -> Vec<Vec<u64>> {
         }
     }
     rows
+}
+
+/// Widths of the little-endian digits of a `bits`-bit range check: [`DIGIT_BITS`] each, the
+/// last one shorter.
+fn digit_widths(bits: u32) -> impl Iterator<Item = u32> {
+    (0..bits).step_by(DIGIT_BITS as usize).map(move |done| (bits - done).min(DIGIT_BITS))
 }
 
 /// Width of a memory tuple $(\mathsf{key}, \mathsf{value}, t)$.
@@ -98,6 +106,12 @@ impl<'a, CS: CircuitBuilder> Env<'a, CS> {
         cs.finish_reciprocal(bus)
     }
 
+    /// The one-column table $\{0, \dots, 2^k - 1\}$, $1 \le k \le$ [`DIGIT_BITS`] (for tests).
+    #[doc(hidden)]
+    pub fn range_table(&self, k: u32) -> TableId {
+        self.range[k as usize - 1]
+    }
+
     /// Assert that `row` is a row of the program table.
     pub fn fetch(&mut self, row: &[Lc]) -> Result<(), R1CSError> {
         self.cs.lookup(self.fetch, row)
@@ -131,19 +145,30 @@ impl<'a, CS: CircuitBuilder> Env<'a, CS> {
 
     /// Constrain $0 \le x < 2^{bits}$ by little-endian byte digits; returns the digits.
     pub fn range_bits(&mut self, x: Lc, v: Option<u64>, bits: u32) -> Result<Vec<Variable>, R1CSError> {
+        let digits = v.map(|v| digit_widths(bits).scan(0, |done, k| {
+            let d = (v >> *done) & ((1 << k) - 1);
+            *done += k;
+            Some(d)
+        }).collect());
+        self.range_digits(x, digits, bits)
+    }
+
+    /// [`range_bits`](Self::range_bits) with the prover's digits given (for tests: digits
+    /// outside their tables).
+    #[doc(hidden)]
+    pub fn range_digits(&mut self, x: Lc, digits: Option<Vec<u64>>, bits: u32) -> Result<Vec<Variable>, R1CSError> {
         assert!((1..=64).contains(&bits));
         let mut acc = x;
-        let mut digits = Vec::new();
+        let mut vars = Vec::new();
         let mut done = 0;
-        while done < bits {
-            let k = (bits - done).min(DIGIT_BITS);
-            let d = self.cs.lookup_value(self.range[k as usize - 1], v.map(|v| (v >> done) & ((1 << k) - 1)))?;
+        for (i, k) in digit_widths(bits).enumerate() {
+            let d = self.cs.lookup_value(self.range[k as usize - 1], digits.as_ref().map(|d| d[i]))?;
             acc = acc - d * pow2(done);
-            digits.push(d);
+            vars.push(d);
             done += k;
         }
         self.cs.constrain(acc);
-        Ok(digits)
+        Ok(vars)
     }
 
     pub fn range32(&mut self, x: Lc, v: Option<u32>) -> Result<Vec<Variable>, R1CSError> {

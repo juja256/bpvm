@@ -250,7 +250,8 @@ fn assert_rejected(tamper: impl FnOnce(&mut Trace)) {
     prove_and_verify(&img, &t).expect("honest trace verifies");
     tamper(&mut t);
     let (stmt, wit) = match bpvm_zk::witness(&img, &t) {
-        Err(e) => return eprintln!("rejected by witness generation: {e}"),
+        // every tamper here must reach the verifier; one caught earlier tests nothing
+        Err(e) => panic!("rejected by witness generation, the verifier is not reached: {e}"),
         Ok(x) => x,
     };
     for backend in BACKENDS {
@@ -301,4 +302,26 @@ fn reject_skipped_step() {
     assert_rejected(|t| {
         t.steps.remove(3);
     });
+}
+
+/// Only the fetch lookup sees this: the statement's program differs from the executed one in
+/// the immediate of an executed instruction, and the witness (so every chip and the bus) is
+/// that of the executed program. The honest prover refuses (a fetch equal to no row); an
+/// unchecked prover's proof must not verify. Also binds the proof to the table's contents.
+#[test]
+fn reject_program_other_than_executed() {
+    let img = small_program();
+    let t = exec(&img);
+    let (mut stmt, wit) = bpvm_zk::witness(&img, &t).unwrap();
+    let pc = t.steps.iter().find(|s| bpvm_zk::isa::canon(s.instr).is_some_and(|f| f.op == bpvm_zk::isa::Op::ADDI)).expect("an executed addi").pc;
+    let row = stmt.program.iter_mut().find(|r| r.pc == pc).unwrap();
+    row.fields.imm ^= 0x10;
+    for backend in BACKENDS {
+        assert!(bpvm_zk::prove(&stmt, &wit, backend).is_err(), "{backend:?}: the honest prover proved a fetch equal to no row");
+        bulletproofs::r1cs::cheats::set_unchecked_prover(true);
+        let proved = bpvm_zk::prove(&stmt, &wit, backend);
+        bulletproofs::r1cs::cheats::set_unchecked_prover(false);
+        let (proof, _) = proved.unwrap();
+        assert!(bpvm_zk::verify(&stmt, &proof).is_err(), "{backend:?}: a program other than the executed one verified");
+    }
 }
