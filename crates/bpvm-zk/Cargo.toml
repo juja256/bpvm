@@ -13,7 +13,11 @@ bpvm-emu = { path = "../bpvm-emu" }
 
 [dev-dependencies]
 rand.workspace = true
+# Soundness tests: a prover that skips its own checks (bulletproofs::r1cs::cheats).
+bulletproofs = { workspace = true, features = ["cheats"] }
 
 [features]
 # Multi-threaded prover and verifier (bulletproofs/parallel, rayon).
 parallel = ["bulletproofs/parallel"]
+# BP++: the norm argument in variable time (its inputs are uniformly random); same proofs.
+bppp-vartime = ["bulletproofs/bppp-vartime"]

@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use bpvm_emu::asm::*;
 use bpvm_emu::{Image, Machine, Trace};
+use bpvm_zk::Backend;
 
 const DATA: u32 = 0x1000;
 
@@ -23,11 +24,18 @@ fn exec(img: &Image) -> Trace {
     Machine::from_image(img).run(1 << 16).expect("program halts")
 }
 
+const BACKENDS: [Backend; 2] = [Backend::Bp, Backend::Bppp];
+
+/// Prove and verify with both backends.
 fn prove_and_verify(img: &Image, trace: &Trace) -> Result<(), String> {
     let (stmt, wit) = bpvm_zk::witness(img, trace)?;
-    let (proof, stats) = bpvm_zk::prove(&stmt, &wit).map_err(|e| format!("{e:?}"))?;
-    println!("{} steps, {} multipliers, {:.2?}", stmt.steps, stats.multipliers, stats.time);
-    bpvm_zk::verify(&stmt, &proof).map(|_| ()).map_err(|e| format!("{e:?}"))
+    for backend in BACKENDS {
+        let (proof, stats) = bpvm_zk::prove(&stmt, &wit, backend).map_err(|e| format!("{backend:?}: {e:?}"))?;
+        assert_eq!(proof.backend(), backend);
+        println!("{backend:?}: {} steps, {} gates, {} linear, {} B, {:.2?}", stmt.steps, stats.multipliers, stats.linear, stats.proof_bytes, stats.time);
+        bpvm_zk::verify(&stmt, &proof).map_err(|e| format!("{backend:?}: {e:?}"))?;
+    }
+    Ok(())
 }
 
 const EDGE: &[u32] = &[0, 1, 7, 0xffff_fff9, 0x7fff_ffff, 0x8000_0000, 0xffff_ffff, 0x1234_5678];
@@ -204,17 +212,19 @@ fn committed_io() {
     let hidden: Vec<u32> = st.private_in.iter().flat_map(|c| c.words.clone()).collect();
     assert!(st.ram.iter().filter(|(a, _)| hidden.contains(a)).all(|(_, v)| *v == 0));
 
-    let (proof, _) = bpvm_zk::prove(&st, &wit).unwrap();
-    bpvm_zk::verify(&st, &proof).unwrap();
+    for backend in BACKENDS {
+        let (proof, _) = bpvm_zk::prove(&st, &wit, backend).unwrap();
+        bpvm_zk::verify(&st, &proof).unwrap();
 
-    let reject = |f: &dyn Fn(&mut Statement)| {
-        let mut forged = st.clone();
-        f(&mut forged);
-        assert!(bpvm_zk::verify(&forged, &proof).is_err());
-    };
-    reject(&|s| s.private_in.swap(0, 1));
-    reject(&|s| s.private_out[0].commitment = s.private_in[0].commitment);
-    reject(&|s| s.public_out[0].1 = 0);
+        let reject = |f: &dyn Fn(&mut Statement)| {
+            let mut forged = st.clone();
+            f(&mut forged);
+            assert!(bpvm_zk::verify(&forged, &proof).is_err());
+        };
+        reject(&|s| s.private_in.swap(0, 1));
+        reject(&|s| s.private_out[0].commitment = s.private_in[0].commitment);
+        reject(&|s| s.public_out[0].1 = 0);
+    }
 }
 
 // ---- soundness: a tampered trace yields a proof that does not verify ----
@@ -239,18 +249,20 @@ fn assert_rejected(tamper: impl FnOnce(&mut Trace)) {
     let mut t = exec(&img);
     prove_and_verify(&img, &t).expect("honest trace verifies");
     tamper(&mut t);
-    // Cheat: let the prover produce a proof even when its own lookups fail.
-    bpvm_zk::logup::set_unchecked_prover(true);
-    match bpvm_zk::witness(&img, &t) {
-        Err(e) => eprintln!("rejected by witness generation: {e}"),
-        Ok((stmt, wit)) => match bpvm_zk::prove(&stmt, &wit) {
-            Err(e) => eprintln!("rejected by prover: {e:?}"),
-            Ok((proof, _)) => {
-                let r = bpvm_zk::verify(&stmt, &proof);
-                eprintln!("verifier: {r:?}");
-                assert!(r.is_err(), "tampered trace verified");
-            }
-        },
+    let (stmt, wit) = match bpvm_zk::witness(&img, &t) {
+        Err(e) => return eprintln!("rejected by witness generation: {e}"),
+        Ok(x) => x,
+    };
+    for backend in BACKENDS {
+        // Cheat: the prover skips its own checks (lookups equal to no row, unsatisfied
+        // circuits) and must still produce a proof, which the verifier must reject.
+        bulletproofs::r1cs::cheats::set_unchecked_prover(true);
+        let proved = bpvm_zk::prove(&stmt, &wit, backend);
+        bulletproofs::r1cs::cheats::set_unchecked_prover(false);
+        let (proof, _) = proved.unwrap_or_else(|e| panic!("{backend:?}: the unchecked prover refused: {e:?}"));
+        let r = bpvm_zk::verify(&stmt, &proof);
+        eprintln!("{backend:?} verifier: {r:?}");
+        assert!(r.is_err(), "{backend:?}: tampered trace verified");
     }
 }
 

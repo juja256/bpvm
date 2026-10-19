@@ -138,17 +138,14 @@ pub struct ProgRow {
 }
 
 impl ProgRow {
-    pub fn to_scalars(&self) -> Vec<Scalar> {
+    /// The row of the program table: $(\mathsf{pc}, \mathsf{op}, rd, rs_1, rs_2, \mathsf{imm}, \mathsf{wr})$.
+    pub fn to_row(&self) -> Vec<u64> {
         let f = &self.fields;
-        vec![
-            Scalar::from(self.pc as u64),
-            f.op.id(),
-            Scalar::from(f.rd as u64),
-            Scalar::from(f.rs1 as u64),
-            Scalar::from(f.rs2 as u64),
-            Scalar::from(f.imm as u64),
-            Scalar::from(f.wr as u64),
-        ]
+        vec![self.pc as u64, f.op as u8 as u64, f.rd as u64, f.rs1 as u64, f.rs2 as u64, f.imm as u64, f.wr as u64]
+    }
+
+    pub fn to_scalars(&self) -> Vec<Scalar> {
+        self.to_row().into_iter().map(Scalar::from).collect()
     }
 }
 

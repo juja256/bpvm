@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use bpvm_emu::{Image, Trace};
-use bulletproofs::r1cs::{ConstraintSystem, Prover, R1CSError, R1CSProof, RandomizableConstraintSystem, Variable, Verifier};
+use bulletproofs::r1cs::{Backend, CircuitBuilder, Cost, Prover, R1CSError, R1CSProof, Variable, Verifier};
 use bulletproofs::{BulletproofGens, PedersenGens};
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::scalar::Scalar;
@@ -37,8 +37,7 @@ use merlin::Transcript;
 
 use crate::chips::{chip, ram_key, MemW, Row};
 use crate::gadgets::*;
-use crate::isa::{canon, program_table, Fields, Op, ProgRow, PROG_WIDTH};
-use crate::logup::Table;
+use crate::isa::{canon, program_table, Fields, Op, ProgRow};
 
 #[derive(Clone, Debug)]
 pub struct Statement {
@@ -251,19 +250,13 @@ pub fn witness_with_io(img: &Image, trace: &Trace, io: &IoSpec) -> Result<(State
     Ok((stmt, Witness { cpu, chips, final_regs, final_ram, init_ram: img.data.clone(), openings }))
 }
 
-/// Build the circuit; returns the number of phase-2 multipliers.
-/// `committed`: variables of the statement's commitments, inputs then outputs.
-fn synthesize<CS: RandomizableConstraintSystem>(
-    cs: &mut CS,
-    st: &Statement,
-    wit: Option<&Witness>,
-    committed: &[Variable],
-) -> Result<usize, R1CSError> {
+/// Build the circuit. `committed`: variables of the statement's commitments, inputs then
+/// outputs.
+fn synthesize<CS: CircuitBuilder>(cs: &mut CS, st: &Statement, wit: Option<&Witness>, committed: &[Variable]) -> Result<(), R1CSError> {
     if st.steps == 0 {
         return Err(R1CSError::GadgetError { description: "empty trace".into() });
     }
-    let program = Table::new(PROG_WIDTH, st.program.iter().map(|r| r.to_scalars()).collect());
-    let mut env = Env::new(cs, program);
+    let mut env = Env::new(cs, st.program.iter().map(|r| r.to_row()).collect())?;
 
     // CPU chip
     let mut pc: Lc = lc(s(st.entry as u64));
@@ -276,7 +269,7 @@ fn synthesize<CS: RandomizableConstraintSystem>(
         let rs2 = env.alloc(f.map(|f| f.rs2 as u64))?;
         let imm = env.alloc(f.map(|f| f.imm as u64))?;
         let wr = env.alloc(f.map(|f| f.wr as u64))?;
-        env.fetch.query(vec![pc.clone(), op.into(), rd.into(), rs1.into(), rs2.into(), imm.into(), wr.into()]);
+        env.fetch(&[pc.clone(), op.into(), rd.into(), rs1.into(), rs2.into(), imm.into(), wr.into()])?;
 
         let v1 = env.alloc(r.map(|r| r.v1 as u64))?;
         let v2 = env.alloc(r.map(|r| r.v2 as u64))?;
@@ -316,7 +309,7 @@ fn synthesize<CS: RandomizableConstraintSystem>(
 
     // Memory boundary: Init (public, free) and Final (witness).
     for r in 0..32u64 {
-        env.mem.add_public(lc(-Scalar::ONE), vec![s(r), Scalar::ZERO, Scalar::ZERO]);
+        env.mem.add_public(lc(-Scalar::ONE), vec![r, 0, 0]);
         let fin = wit.map(|w| w.final_regs[r as usize]);
         let v = env.alloc(fin.map(|f| f.0 as u64))?;
         let t = env.alloc(fin.map(|f| f.1))?;
@@ -335,7 +328,7 @@ fn synthesize<CS: RandomizableConstraintSystem>(
     for (j, (addr, init)) in st.ram.iter().enumerate() {
         let key = ram_key(*addr);
         match in_limbs.get(addr) {
-            None => env.mem.add_public(lc(-Scalar::ONE), vec![key, s(*init as u64), Scalar::ZERO]),
+            None => env.mem.add_public(lc(-Scalar::ONE), vec![key, *init as u64, 0]),
             Some(&(i, k)) => {
                 let w = wit.map(|w| w.init_ram[addr]);
                 let v = env.alloc(w.map(u64::from))?;
@@ -363,17 +356,31 @@ fn synthesize<CS: RandomizableConstraintSystem>(
         env.constrain(x);
     }
 
-    let phase2 = env.phase2_multipliers();
-    env.finish()?;
-    Ok(phase2)
+    env.finish()
 }
 
 #[derive(Clone, Debug)]
 pub struct Stats {
+    pub backend: Backend,
+    /// BP: multipliers; BP++: gates ($N_p + N_m$).
     pub multipliers: usize,
+    /// BP++: the length of the linear part of the commitments ($N_{lin}$: free witnesses,
+    /// multiplicities, copies); BP: 0.
+    pub linear: usize,
+    /// Generators needed (BP: multipliers rounded up to a power of two).
     pub padded: usize,
     pub proof_bytes: usize,
     pub time: Duration,
+}
+
+impl Stats {
+    fn new(backend: Backend, cost: &Cost) -> Stats {
+        let (multipliers, linear) = match backend {
+            Backend::Bp => (cost.bp_phase1 + cost.bp_phase2, 0),
+            _ => (cost.bppp_gates, cost.bppp_lin),
+        };
+        Stats { backend, multipliers, linear, padded: cost.gens_capacity(backend), proof_bytes: 0, time: Duration::ZERO }
+    }
 }
 
 /// Generators for `n` multipliers, shared across proofs and verifications in this process
@@ -407,47 +414,57 @@ fn commit_prover(prover: &mut Prover<'_, &mut Transcript>, st: &Statement, wit: 
         .collect()
 }
 
-/// Number of multipliers of the circuit for `st` (synthesized without a witness).
-pub fn multipliers(st: &Statement) -> Result<usize, R1CSError> {
+/// The cost of the circuit for `st` on both backends (synthesized without a witness).
+pub fn cost(st: &Statement) -> Result<Cost, R1CSError> {
     let mut transcript = Transcript::new(b"bpvm-size");
     let mut verifier = Verifier::new(&mut transcript);
     let committed: Vec<Variable> =
         st.private_in.iter().chain(&st.private_out).map(|c| verifier.commit(c.commitment)).collect();
-    let phase2 = synthesize(&mut verifier, st, None, &committed)?;
-    Ok(verifier.metrics().multipliers + phase2)
+    synthesize(&mut verifier, st, None, &committed)?;
+    Ok(verifier.cost())
 }
 
-pub fn prove(st: &Statement, wit: &Witness) -> Result<(R1CSProof, Stats), R1CSError> {
-    prove_staged(st, wit, |_| {})
+/// The number of BP multipliers of the circuit for `st`.
+pub fn multipliers(st: &Statement) -> Result<usize, R1CSError> {
+    cost(st).map(|c| c.bp_phase1 + c.bp_phase2)
+}
+
+pub fn prove(st: &Statement, wit: &Witness, backend: Backend) -> Result<(R1CSProof, Stats), R1CSError> {
+    prove_staged(st, wit, backend, |_| {})
 }
 
 /// [`prove`] with a callback after each stage ("synthesized"), for profiling.
 #[doc(hidden)]
-pub fn prove_staged(st: &Statement, wit: &Witness, mut stage: impl FnMut(&'static str)) -> Result<(R1CSProof, Stats), R1CSError> {
+pub fn prove_staged(st: &Statement, wit: &Witness, backend: Backend, mut stage: impl FnMut(&'static str)) -> Result<(R1CSProof, Stats), R1CSError> {
     let start = Instant::now();
     let pc_gens = PedersenGens::default();
     let mut transcript = Transcript::new(b"bpvm");
     st.bind(&mut transcript);
     let mut prover = Prover::new(&pc_gens, &mut transcript);
+    prover.set_backend(backend);
     let committed = commit_prover(&mut prover, st, wit)?;
-    let phase2 = synthesize(&mut prover, st, Some(wit), &committed)?;
+    synthesize(&mut prover, st, Some(wit), &committed)?;
     stage("synthesized");
-    let n = prover.metrics().multipliers + phase2;
-    let proof = prover.prove(&gens_for(n))?;
-    let stats = Stats { multipliers: n, padded: n.next_power_of_two(), proof_bytes: proof.to_bytes().len(), time: start.elapsed() };
+    let mut stats = Stats::new(backend, &prover.cost());
+    let proof = prover.prove(&gens_for(stats.padded))?;
+    stats.proof_bytes = proof.to_bytes().len();
+    stats.time = start.elapsed();
     Ok((proof, stats))
 }
 
+/// Verify with the backend that produced `proof` (each backend is a sound proof system on
+/// its own; the encoding names it).
 pub fn verify(st: &Statement, proof: &R1CSProof) -> Result<Duration, R1CSError> {
     let start = Instant::now();
     let pc_gens = PedersenGens::default();
     let mut transcript = Transcript::new(b"bpvm");
     st.bind(&mut transcript);
     let mut verifier = Verifier::new(&mut transcript);
+    verifier.set_backend(proof.backend());
     let committed: Vec<Variable> =
         st.private_in.iter().chain(&st.private_out).map(|c| verifier.commit(c.commitment)).collect();
-    let phase2 = synthesize(&mut verifier, st, None, &committed)?;
-    let n = verifier.metrics().multipliers + phase2;
-    verifier.verify(proof, &pc_gens, &gens_for(n))?;
+    synthesize(&mut verifier, st, None, &committed)?;
+    let cap = verifier.cost().gens_capacity(proof.backend());
+    verifier.verify(proof, &pc_gens, &gens_for(cap))?;
     Ok(start.elapsed())
 }

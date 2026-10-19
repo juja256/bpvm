@@ -1,15 +1,13 @@
-//! Gadget environment: the constraint system plus all shared lookups and arguments.
+//! Gadget environment: the constraint system plus all shared tables and arguments.
 //!
 //! Gadgets take native witness values as `Option<_>` (`Some` for the prover, `None` for the
 //! verifier) and linear combinations for the constrained quantities; both sides run the same
-//! code so the circuits match.
+//! code so the circuits match. Lookups and reciprocal arguments are the builder operations of
+//! the bulletproofs fork ([`CircuitBuilder`]): the same circuit is proven with Bulletproofs
+//! (logUp over randomized constraints) or natively with Bulletproofs++ (reciprocal form).
 
-use std::sync::Arc;
-
-use bulletproofs::r1cs::{LinearCombination, R1CSError, RandomizableConstraintSystem, Variable};
+use bulletproofs::r1cs::{CircuitBuilder, LinearCombination, R1CSError, Reciprocal, TableId, Variable};
 use curve25519_dalek::scalar::Scalar;
-
-use crate::logup::{LogUp, Lookup, Table};
 
 pub type Lc = LinearCombination;
 
@@ -40,29 +38,25 @@ pub const TAG_XOR: u64 = 0;
 pub const TAG_OR: u64 = 1;
 pub const TAG_AND: u64 = 2;
 
-/// Range table: rows $(x, k)$ for $k \in [1, 8]$, $x < 2^k$ — one table serves every
-/// partial-byte range check.
-fn range_table() -> Table {
-    let rows = (1..=8u64).flat_map(|k| (0..1u64 << k).map(move |x| vec![s(x), s(k)])).collect();
-    Table::new(2, rows)
-}
+/// Digits of range checks are at most this many bits (one table per width up to it).
+pub const DIGIT_BITS: u32 = 8;
 
 /// Rows $(s, 2^s)$ for $s < 32$.
-fn pow_table() -> Table {
-    Table::new(2, (0..32u32).map(|i| vec![s(i as u64), s(1u64 << i)]).collect())
+fn pow_rows() -> Vec<Vec<u64>> {
+    (0..32u32).map(|i| vec![i as u64, 1u64 << i]).collect()
 }
 
 /// Rows $(\mathsf{tag}, a, b, a \circ b)$ over nibbles for XOR, OR, AND.
-fn bitop_table() -> Table {
+fn bitop_rows() -> Vec<Vec<u64>> {
     let mut rows = Vec::new();
     for (tag, f) in [(TAG_XOR, (|a, b| a ^ b) as fn(u64, u64) -> u64), (TAG_OR, |a, b| a | b), (TAG_AND, |a, b| a & b)] {
         for a in 0..16 {
             for b in 0..16 {
-                rows.push(vec![s(tag), s(a), s(b), s(f(a, b))]);
+                rows.push(vec![tag, a, b, f(a, b)]);
             }
         }
     }
-    Table::new(4, rows)
+    rows
 }
 
 /// Width of a memory tuple $(\mathsf{key}, \mathsf{value}, t)$.
@@ -72,56 +66,50 @@ pub const BUS_WIDTH: usize = 8;
 /// Bits for timestamp gaps $t - t_{\text{prev}} - 1$.
 pub const TS_BITS: u32 = 24;
 
-pub struct Env<'a, CS: RandomizableConstraintSystem> {
+/// The constraint system and the shared tables and arguments. Tables without lookups cost
+/// nothing; every table's multiplicities are shared by all its lookups.
+pub struct Env<'a, CS: CircuitBuilder> {
     pub cs: &'a mut CS,
-    pub range: Lookup,
-    pub pow: Lookup,
-    pub bitop: Lookup,
-    pub fetch: Lookup,
-    pub mem: LogUp,
-    pub bus: LogUp,
+    /// One-column tables $\{0, \dots, 2^k - 1\}$ for $k = 1, \dots, 8$ (index $k - 1$).
+    range: Vec<TableId>,
+    pow: TableId,
+    bitop: TableId,
+    fetch: TableId,
+    pub mem: Reciprocal,
+    pub bus: Reciprocal,
 }
 
-impl<'a, CS: RandomizableConstraintSystem> Env<'a, CS> {
-    pub fn new(cs: &'a mut CS, program: Table) -> Self {
-        Env {
-            cs,
-            range: Lookup::new(Arc::new(range_table())),
-            pow: Lookup::new(Arc::new(pow_table())),
-            bitop: Lookup::new(Arc::new(bitop_table())),
-            fetch: Lookup::new(Arc::new(program)),
-            mem: LogUp::new(MEM_WIDTH),
-            bus: LogUp::new(BUS_WIDTH),
-        }
+impl<'a, CS: CircuitBuilder> Env<'a, CS> {
+    /// `program`: the rows of the program table (fetch lookups).
+    pub fn new(cs: &'a mut CS, program: Vec<Vec<u64>>) -> Result<Self, R1CSError> {
+        let range = (1..=DIGIT_BITS).map(|k| cs.table((0..1u64 << k).map(|x| vec![x]).collect())).collect::<Result<_, _>>()?;
+        let pow = cs.table(pow_rows())?;
+        let bitop = cs.table(bitop_rows())?;
+        let fetch = cs.table(program)?;
+        let mem = cs.reciprocal(MEM_WIDTH)?;
+        let bus = cs.reciprocal(BUS_WIDTH)?;
+        Ok(Env { cs, range, pow, bitop, fetch, mem, bus })
     }
 
-    /// Multipliers the arguments will add in phase 2.
-    pub fn phase2_multipliers(&self) -> usize {
-        self.range.phase2_multipliers()
-            + self.pow.phase2_multipliers()
-            + self.bitop.phase2_multipliers()
-            + self.fetch.phase2_multipliers()
-            + self.mem.phase2_multipliers()
-            + self.bus.phase2_multipliers()
-    }
-
-    /// Commit multiplicities and emit all reciprocal arguments.
+    /// Record the memory and bus arguments (the tables are finalized at prove/verify).
     pub fn finish(self) -> Result<(), R1CSError> {
-        let Env { cs, range, pow, bitop, fetch, mem, bus } = self;
-        range.finalize(cs)?;
-        pow.finalize(cs)?;
-        bitop.finalize(cs)?;
-        fetch.finalize(cs)?;
-        mem.finalize(cs)?;
-        bus.finalize(cs)
+        let Env { cs, mem, bus, .. } = self;
+        cs.finish_reciprocal(mem)?;
+        cs.finish_reciprocal(bus)
     }
 
+    /// Assert that `row` is a row of the program table.
+    pub fn fetch(&mut self, row: &[Lc]) -> Result<(), R1CSError> {
+        self.cs.lookup(self.fetch, row)
+    }
+
+    /// A free witness (BP: half a multiplier; BP++: no gate).
     pub fn alloc(&mut self, v: Option<u64>) -> Result<Variable, R1CSError> {
-        self.cs.allocate(v.map(s))
+        self.cs.witness(v.map(s))
     }
 
     pub fn alloc_scalar(&mut self, v: Option<Scalar>) -> Result<Variable, R1CSError> {
-        self.cs.allocate(v)
+        self.cs.witness(v)
     }
 
     pub fn constrain(&mut self, x: Lc) {
@@ -148,9 +136,8 @@ impl<'a, CS: RandomizableConstraintSystem> Env<'a, CS> {
         let mut digits = Vec::new();
         let mut done = 0;
         while done < bits {
-            let k = (bits - done).min(8);
-            let d = self.alloc(v.map(|v| (v >> done) & ((1 << k) - 1)))?;
-            self.range.query(vec![d.into(), lc(s(k as u64))]);
+            let k = (bits - done).min(DIGIT_BITS);
+            let d = self.cs.lookup_value(self.range[k as usize - 1], v.map(|v| (v >> done) & ((1 << k) - 1)))?;
             acc = acc - d * pow2(done);
             digits.push(d);
             done += k;
@@ -207,7 +194,7 @@ impl<'a, CS: RandomizableConstraintSystem> Env<'a, CS> {
             let na = self.alloc(w.map(|w| nib(w.0)))?;
             let nb = self.alloc(w.map(|w| nib(w.1)))?;
             let nr = self.alloc(w.map(|w| nib(w.2)))?;
-            self.bitop.query(vec![lc(s(tag)), na.into(), nb.into(), nr.into()]);
+            self.cs.lookup(self.bitop, &[lc(s(tag)), na.into(), nb.into(), nr.into()])?;
             let k = pow2(4 * i);
             ea = ea - na * k;
             eb = eb - nb * k;
@@ -223,7 +210,7 @@ impl<'a, CS: RandomizableConstraintSystem> Env<'a, CS> {
     pub fn shift_pow(&mut self, b: Lc, vb: Option<u32>) -> Result<Variable, R1CSError> {
         let sh = self.alloc(vb.map(|b| (b & 31) as u64))?;
         let p = self.alloc(vb.map(|b| 1u64 << (b & 31)))?;
-        self.pow.query(vec![sh.into(), p.into()]);
+        self.cs.lookup(self.pow, &[sh.into(), p.into()])?;
         let hi = b - sh;
         // hi = 32 * h with h < 2^27
         let h = self.alloc(vb.map(|b| (b >> 5) as u64))?;

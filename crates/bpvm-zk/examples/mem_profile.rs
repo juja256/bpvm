@@ -1,5 +1,5 @@
 //! Heap profile of proving a guest: live bytes after each stage and the peak.
-//! `cargo run --release -p bpvm-zk --example mem_profile -- guest/sha256/sha256.elf`
+//! `cargo run --release -p bpvm-zk --example mem_profile -- guest/sha256/sha256.elf [bp|bppp]`
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -54,20 +54,29 @@ fn report(stage: &str, n: Option<usize>) {
 }
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: mem_profile <elf>");
+    let path = std::env::args().nth(1).expect("usage: mem_profile <elf> [bp|bppp]");
+    let backend = match std::env::args().nth(2).as_deref() {
+        None | Some("bp") => bpvm_zk::Backend::Bp,
+        Some("bppp") => bpvm_zk::Backend::Bppp,
+        Some(b) => panic!("unknown backend {b}"),
+    };
     let img = Image::from_elf(&std::fs::read(&path).unwrap()).unwrap();
     let trace = Machine::from_image(&img).run(1 << 22).unwrap();
     report("executed", None);
     let (st, wit) = bpvm_zk::witness(&img, &trace).unwrap();
     drop(trace);
     report("witness", None);
-    let n = bpvm_zk::multipliers(&st).unwrap();
+    let cost = bpvm_zk::cost(&st).unwrap();
+    let n = match backend {
+        bpvm_zk::Backend::Bp => cost.bp_phase1 + cost.bp_phase2,
+        _ => cost.bppp_gates,
+    };
     PEAK.store(LIVE.load(Relaxed), Relaxed);
     report("sized", Some(n));
-    let (proof, stats) = bpvm_zk::vm::prove_staged(&st, &wit, |s| report(s, Some(n))).unwrap();
+    let (proof, stats) = bpvm_zk::vm::prove_staged(&st, &wit, backend, |s| report(s, Some(n))).unwrap();
     report("proved", Some(n));
     let t = bpvm_zk::verify(&st, &proof).unwrap();
     report("verified", Some(n));
     println!("verify {t:.2?}");
-    println!("{} steps, {n} multipliers, prove {:.2?}", st.steps, stats.time);
+    println!("{backend:?}: {} steps, {n} multipliers/gates, {} linear, {} B, prove {:.2?}", st.steps, stats.linear, stats.proof_bytes, stats.time);
 }

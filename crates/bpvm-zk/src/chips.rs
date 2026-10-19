@@ -6,7 +6,7 @@
 //! range-checks every `vd`, so every value in the register file and RAM is a 32-bit word.
 //! RAM accesses (loads/stores) happen here, at timestamp $4\,\mathsf{clk} + 4$.
 
-use bulletproofs::r1cs::{R1CSError, RandomizableConstraintSystem, Variable};
+use bulletproofs::r1cs::{CircuitBuilder, R1CSError, Variable};
 use curve25519_dalek::scalar::Scalar;
 
 use crate::gadgets::*;
@@ -37,8 +37,8 @@ pub struct MemW {
 }
 
 /// Memory key of a RAM word (registers use keys 0..31).
-pub fn ram_key(word_addr: u32) -> Scalar {
-    pow2(32) + s((word_addr >> 2) as u64)
+pub fn ram_key(word_addr: u32) -> u64 {
+    (1 << 32) + (word_addr >> 2) as u64
 }
 
 struct Vars {
@@ -51,7 +51,7 @@ struct Vars {
     vd: Variable,
 }
 
-pub fn chip<CS: RandomizableConstraintSystem>(env: &mut Env<'_, CS>, op: Op, w: Option<&Row>) -> Result<(), R1CSError> {
+pub fn chip<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, w: Option<&Row>) -> Result<(), R1CSError> {
     let x = Vars {
         clk: env.alloc(w.map(|r| r.clk))?,
         pc: env.alloc(w.map(|r| r.pc as u64))?,
@@ -314,7 +314,7 @@ pub fn chip<CS: RandomizableConstraintSystem>(env: &mut Env<'_, CS>, op: Op, w: 
 }
 
 /// Loads and stores: effective address, the RAM word access, byte/half selection.
-fn mem_op<CS: RandomizableConstraintSystem>(env: &mut Env<'_, CS>, op: Op, x: &Vars, w: Option<&Row>) -> Result<(), R1CSError> {
+fn mem_op<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, x: &Vars, w: Option<&Row>) -> Result<(), R1CSError> {
     use Op::*;
     let t32 = pow2(32);
     let ea = w.map(|r| r.v1 as u64 + r.imm as u64);

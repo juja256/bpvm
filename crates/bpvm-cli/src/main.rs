@@ -2,10 +2,16 @@
 //!
 //! ```text
 //! bpvm run    <elf> [-i input.json]                                   execute only
-//! bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json]  execute and prove
+//! bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp]
+//!                                                                     execute and prove
 //! bpvm verify <elf> <proof.json>                                     verify
-//! bpvm [--no-prove] <elf> [-i input.json]       demo: prove, verify, reject a forged exit code
+//! bpvm [--no-prove] [--backend bp|bppp] <elf> [-i input.json]
+//!                                               demo: prove, verify, reject a forged exit code
 //! ```
+//!
+//! `--backend` picks the proof system: `bp` (Bulletproofs, the default) or `bppp`
+//! (Bulletproofs++, experimental: smaller proofs, faster verification). The verifier reads the
+//! backend from the proof.
 //!
 //! The input file maps the guest's input variables (see `guest/common/bpvm.h`) to values:
 //! a number, a decimal or `0x` hex string, an array of those, or (for `uint8_t` arrays) a
@@ -20,7 +26,7 @@ use std::process::ExitCode;
 
 use bpvm_emu::{Image, IoKind, IoType, IoVar, Machine};
 use bpvm_zk::isa::Op;
-use bpvm_zk::{Committed, IoSpec, Statement};
+use bpvm_zk::{Backend, Committed, IoSpec, Statement};
 use bulletproofs::r1cs::R1CSProof;
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::scalar::Scalar;
@@ -29,9 +35,9 @@ use serde_json::{json, Map, Value};
 const MAX_STEPS: u64 = 1 << 20;
 const USAGE: &str = "usage:
   bpvm run    <elf> [-i input.json]
-  bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json]
+  bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp]
   bpvm verify <elf> <proof.json>
-  bpvm [--no-prove] <elf> [-i input.json]";
+  bpvm [--no-prove] [--backend bp|bppp] <elf> [-i input.json]";
 
 struct Args {
     positional: Vec<String>,
@@ -45,7 +51,7 @@ fn parse_args() -> Result<Args, String> {
     while let Some(x) = it.next() {
         match x.as_str() {
             "--no-prove" => a.no_prove = true,
-            "-i" | "-o" | "-s" => {
+            "-i" | "-o" | "-s" | "--backend" => {
                 let v = it.next().ok_or(format!("{x} needs a value"))?;
                 a.flags.insert(x, v);
             }
@@ -56,19 +62,35 @@ fn parse_args() -> Result<Args, String> {
     Ok(a)
 }
 
+fn backend_of(a: &Args) -> Result<Backend, String> {
+    match a.flags.get("--backend").map(String::as_str) {
+        None | Some("bp") => Ok(Backend::Bp),
+        Some("bppp") => Ok(Backend::Bppp),
+        Some(b) => Err(format!("unknown backend {b:?} (bp or bppp)")),
+    }
+}
+
+fn backend_name(b: Backend) -> &'static str {
+    match b {
+        Backend::Bp => "bp",
+        _ => "bppp",
+    }
+}
+
 fn main() -> ExitCode {
     let res = parse_args().and_then(|a| {
         let p = &a.positional;
+        let backend = backend_of(&a)?;
         match p.first().map(String::as_str) {
-            Some("run") if p.len() == 2 => run(&p[1], a.flags.get("-i"), Mode::Run),
+            Some("run") if p.len() == 2 => run(&p[1], a.flags.get("-i"), Mode::Run, backend),
             Some("prove") if p.len() == 2 => {
                 let stem = p[1].strip_suffix(".elf").unwrap_or(&p[1]).to_string();
                 let out = a.flags.get("-o").cloned().unwrap_or(format!("{stem}.proof.json"));
                 let sec = a.flags.get("-s").cloned().unwrap_or(format!("{stem}.secrets.json"));
-                run(&p[1], a.flags.get("-i"), Mode::Prove { out, sec })
+                run(&p[1], a.flags.get("-i"), Mode::Prove { out, sec }, backend)
             }
             Some("verify") if p.len() == 3 => verify(&p[1], &p[2]),
-            Some(_) if p.len() == 1 => run(&p[0], a.flags.get("-i"), if a.no_prove { Mode::Run } else { Mode::Demo }),
+            Some(_) if p.len() == 1 => run(&p[0], a.flags.get("-i"), if a.no_prove { Mode::Run } else { Mode::Demo }, backend),
             _ => Err(USAGE.into()),
         }
     });
@@ -207,7 +229,7 @@ fn group(names: &[String], items: impl IntoIterator<Item = Value>) -> Value {
 
 // ---------- run / prove ----------
 
-fn run(path: &str, input: Option<&String>, mode: Mode) -> Result<(), String> {
+fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend) -> Result<(), String> {
     let mut img = load(path)?;
     println!("loaded {path}: entry {:#x}, {} code words, {} RAM words", img.entry, img.code.len(), img.data.len());
 
@@ -274,10 +296,13 @@ fn run(path: &str, input: Option<&String>, mode: Mode) -> Result<(), String> {
 
     let proved = match mode {
         Mode::Run => return Ok(()),
-        _ => bpvm_zk::prove(&stmt, &wit).map_err(|e| format!("prover: {e:?}"))?,
+        _ => bpvm_zk::prove(&stmt, &wit, backend).map_err(|e| format!("prover: {e:?}"))?,
     };
     let (proof, stats) = proved;
-    println!("proved:   {} multipliers (padded to {}), proof {} bytes, {:.2?}", stats.multipliers, stats.padded, stats.proof_bytes, stats.time);
+    match backend {
+        Backend::Bp => println!("proved:   bp, {} multipliers (padded to {}), proof {} bytes, {:.2?}", stats.multipliers, stats.padded, stats.proof_bytes, stats.time),
+        _ => println!("proved:   bppp, {} gates, {} linear slots, proof {} bytes, {:.2?}", stats.multipliers, stats.linear, stats.proof_bytes, stats.time),
+    }
 
     match mode {
         Mode::Run => unreachable!(),
@@ -299,6 +324,7 @@ fn run(path: &str, input: Option<&String>, mode: Mode) -> Result<(), String> {
             let op_counts: Map<String, Value> = stmt.op_counts.iter().map(|(op, n)| (format!("{op:?}"), json!(n))).collect();
             let proof_file = json!({
                 "bpvm": 1,
+                "backend": backend_name(backend),
                 "steps": stmt.steps,
                 "exit_code": stmt.exit_code,
                 "op_counts": op_counts,
@@ -377,7 +403,12 @@ fn verify(path: &str, proof_path: &str) -> Result<(), String> {
         .map_err(|e| format!("bad proof: {e:?}"))?;
     let t = bpvm_zk::verify(&stmt, &proof).map_err(|e| format!("verifier rejected: {e:?}"))?;
 
-    println!("verified ({t:.2?}): {path} halts with exit code {} after {} steps", stmt.exit_code, stmt.steps);
+    if let Some(b) = f.get("backend").and_then(Value::as_str) {
+        if b != backend_name(proof.backend()) {
+            return Err(format!("{proof_path}: the file says backend {b:?}, the proof is {:?}", backend_name(proof.backend())));
+        }
+    }
+    println!("verified ({t:.2?}, {}): {path} halts with exit code {} after {} steps", backend_name(proof.backend()), stmt.exit_code, stmt.steps);
     for (k, v) in &public_in {
         println!("  public input   {k} = {v}");
     }
