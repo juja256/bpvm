@@ -104,7 +104,7 @@ with volatile access.
 ## Benchmarks
 
 `cargo run --release -p bpvm-cli [--features parallel] -- --backend bp|bppp <elf>`: execute,
-prove, verify (2026-10-20, bulletproofs fork `main` `f9f540a`, unchanged on `dc8d057`; BP++ with the default
+prove, verify (2026-10-20, bulletproofs fork `main` `f9f540a`, unchanged on `5b4439b`; BP++ with the default
 `bppp-vartime`). BP size is in
 multipliers (padded to a power of two); BP++ size is gates $N_p + N_m$ plus linear slots
 $N_{lin}$ (free witnesses, multiplicities and copies; they cost no gate but lengthen the
