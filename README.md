@@ -17,7 +17,7 @@ guest-rs/         Rust guests (ec-add with k256, ec-mini) and runtime  -> guest-
 ## Quick start
 
 ```sh
-cargo run --release -p bpvm-cli -- guest/fib/fib.elf          # execute, prove, verify F(10)
+cargo run --release -p bpvm-cli -- guest/fib/fib.elf          # execute, prove, verify Fibonacci(10) = 55
 cargo run --release -p bpvm-cli -- --backend bppp guest/fib/fib.elf   # the same with BP++
 cargo run --release -p bpvm-cli -- run guest-rs/ec-add/ec_add.elf   # execute only
 cargo test --release
@@ -112,16 +112,24 @@ commitments).
 
 | guest | steps | backend | size | proof | serial prove / verify | parallel prove / verify | parallel RSS |
 |---|---|---|---|---|---|---|---|
-| `guest/fib/fib.elf` — C, F(10) | 78 | BP | 4 424 ($2^{13}$) | 1345 B | 0.51 s / 40 ms | 0.36 s / 37 ms | |
+| [Fibonacci](guest/fib/fib.c) | 78 | BP | 4 424 ($2^{13}$) | 1345 B | 0.51 s / 40 ms | 0.36 s / 37 ms | |
 | | | BP++ | 2 450 + 1 683 | 945 B | 0.27 s / 16 ms | 0.22 s / 16 ms | |
-| `guest/balance/balance.elf` — C, 4 committed inputs, 1 committed output | 72 | BP | 4 769 ($2^{13}$) | 1345 B | 0.49 s / 41 ms | | |
+| [balance](guest/balance/balance.c) | 72 | BP | 4 769 ($2^{13}$) | 1345 B | 0.49 s / 41 ms | | |
 | | | BP++ | 2 368 + 2 579 | 977 B | 0.27 s / 19 ms | | |
-| `guest/sha256/sha256.elf` — C, SHA-256("abc"), one block | 5 904 | BP | 314 536 ($2^{19}$) | 1729 B | 30.7 s / 2.49 s | 4.62 s / 0.43 s | 0.50 GB |
+| [SHA-256](guest/sha256/sha256.c) | 5 904 | BP | 314 536 ($2^{19}$) | 1729 B | 30.7 s / 2.49 s | 4.62 s / 0.43 s | 0.50 GB |
 | | | BP++ | 178 651 + 105 359 | 1329 B | 15.6 s / 1.05 s | 2.90 s / 0.37 s | 0.76 GB |
-| `guest-rs/ec-mini/ec_mini.elf` — Rust, dependency-free secp256k1 $G+2G$ (Jacobian add + check against $3G$) | 20 713 | BP | 977 716 ($2^{20}$) | 1793 B | 75.8 s / 5.24 s | 11.6 s / 1.06 s | 1.13 GB |
+| [ec-mini](guest-rs/ec-mini/src) | 20 713 | BP | 977 716 ($2^{20}$) | 1793 B | 75.8 s / 5.24 s | 11.6 s / 1.06 s | 1.13 GB |
 | | | BP++ | 578 989 + 263 047 | 1457 B | 49.5 s / 3.18 s | 8.89 s / 1.09 s | 2.15 GB |
-| `guest-rs/ec-add/ec_add.elf` — Rust, `k256`: $G+2G$, decode + to_affine | 253 556 | BP | 12 407 583 ($2^{24}$) | 2049 B | did not fit in 24 GB | 166 s / 16.4 s | 10.1 GB |
+| [ec-add](guest-rs/ec-add/src) | 253 556 | BP | 12 407 583 ($2^{24}$) | 2049 B | did not fit in 24 GB | 166 s / 16.4 s | 10.1 GB |
 | | | BP++ | 7 262 452 + 3 529 272 | 1649 B | | 110 s / 16.0 s | 10.9 GB |
+
+The guests (the ELF next to each source):
+- **Fibonacci** (C): the 10th Fibonacci number, 55 (the exit code).
+- **balance** (C): 4 committed inputs, 1 committed output.
+- **SHA-256** (C): SHA-256("abc"), one block.
+- **ec-mini** (Rust, no dependencies): secp256k1 $G + 2G$ (Jacobian addition, checked against
+  $3G$).
+- **ec-add** (Rust, `k256`): $G + 2G$, decode and `to_affine`.
 
 BP++ proofs are 400 B smaller at every size, and BP++ proves with 40% fewer gates. It proves
 faster than BP everywhere: 35–49% single-threaded, 23–39% multi-threaded. It verifies 1.6–2.5x
