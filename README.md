@@ -3,7 +3,7 @@
 Experimental zkVM for RV32IM programs (Rust/C guests) proven with **Bulletproofs** or
 **Bulletproofs++** (chosen per proof), with reciprocal-argument (logUp) lookups and memory
 checking. The circuit is written once against the `CircuitBuilder` of the
-[bulletproofs fork](https://github.com/zero-art-rs/bulletproofs) and lowered to either proof
+[bulletproofs fork](https://github.com/juja256/bulletproofs) and lowered to either proof
 system. See [DESIGN.md](DESIGN.md).
 
 ```

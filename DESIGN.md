@@ -1,6 +1,6 @@
 # bpvm — design notes
 
-A zkVM for RV32IM on top of the bulletproofs fork `zero-art-rs/bulletproofs` (a fork of
+A zkVM for RV32IM on top of the bulletproofs fork `juja256/bulletproofs` (a fork of
 `zkcrypto/bulletproofs` with two-phase randomized constraints, a Bulletproofs++ backend and a
 circuit builder with lookups and reciprocal arguments). Guests are Rust/C programs compiled
 to `riscv32im`; the prover executes the ELF, records the trace and proves it in one circuit,

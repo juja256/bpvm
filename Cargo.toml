@@ -7,8 +7,8 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-# The bulletproofs fork with the BP++ backend and the circuit builder (main, f9f540a).
-bulletproofs = { git = "https://github.com/zero-art-rs/bulletproofs", rev = "f9f540ab29b54cf12bc5d6ac85e095602b4d63cf", features = ["yoloproofs", "bppp"] }
+# The bulletproofs fork with the BP++ backend and the circuit builder (juja256/bulletproofs, f9f540a).
+bulletproofs = { git = "https://github.com/juja256/bulletproofs", rev = "f9f540ab29b54cf12bc5d6ac85e095602b4d63cf", features = ["yoloproofs", "bppp"] }
 curve25519-dalek = { version = "4.1.3", features = ["digest", "group", "rand_core", "serde"] }
 merlin = "3"
 rand = "0.8"
