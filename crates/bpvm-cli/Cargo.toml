@@ -11,12 +11,13 @@ path = "src/main.rs"
 
 [dependencies]
 bpvm-emu = { path = "../bpvm-emu" }
-bpvm-zk = { path = "../bpvm-zk" }
+bpvm-zk = { path = "../bpvm-zk", default-features = false }
 bulletproofs.workspace = true
 curve25519-dalek.workspace = true
 rand.workspace = true
 serde_json = "1"
 
 [features]
+default = ["bppp-vartime"]
 parallel = ["bpvm-zk/parallel"]
 bppp-vartime = ["bpvm-zk/bppp-vartime"]

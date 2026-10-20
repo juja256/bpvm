@@ -17,6 +17,9 @@ rand.workspace = true
 bulletproofs = { workspace = true, features = ["cheats"] }
 
 [features]
+# The BP++ norm argument in variable time by default (secp256k1-zkp does the same); build with
+# --no-default-features for the constant-time one.
+default = ["bppp-vartime"]
 # Multi-threaded prover and verifier (bulletproofs/parallel, rayon).
 parallel = ["bulletproofs/parallel"]
 # BP++: the norm argument in variable time (its inputs are uniformly random); same proofs.

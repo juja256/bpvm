@@ -29,8 +29,10 @@ The example ELFs are committed. To rebuild them or write your own guest see
 
 `--features parallel` (on `bpvm-cli` or `bpvm-zk`) enables the multi-threaded prover and
 verifier of the bulletproofs fork (rayon); proofs are identical to the serial ones.
-`--features bppp-vartime` computes the BP++ norm argument in variable time (its inputs are
-uniformly random; same proofs, ≈ 13% faster proving); constant time is the default.
+The default feature `bppp-vartime` computes the BP++ norm argument in variable time: its inputs
+are uniformly random given the transcript, the commitments to the witness stay constant time,
+and the proofs are the same (secp256k1-zkp's BP++ does the same). It proves ≈ 13% faster;
+`--no-default-features` gives the constant-time norm argument.
 
 **Backends.** `--backend bp` (default) is Bulletproofs: upstream protocol, logUp over
 randomized constraints. `--backend bppp` is Bulletproofs++ (ePrint 2022/510, experimental,
@@ -128,7 +130,9 @@ verifier is the SHA3 digest of the circuit, which is bound into the transcript b
 challenge. On mid-size circuits BP++ needs more memory (gates and linear slots each carry a
 generator). The `ec_add` RSS of BP++ varies between runs on macOS while its heap peak does not
 (allocator caches). Single-threaded BP++ RSS is not shown; it was measured while other jobs
-ran. `--features bppp-vartime` proves `ec_mini` about 13% faster.
+ran. The BP++ rows were measured with the constant-time norm argument (`--no-default-features`
+was not needed then: `bppp-vartime` became the default later); with `bppp-vartime` `ec_mini`
+proves about 13% faster.
 
 The fork's serial code is also faster than the original prover (`ec_mini`: 76 s / 5.3 s
 against 92 s / 14 s). Prover memory went from ≈ 3.4 KB to ≈ 1 KB per BP multiplier, ≈ 320 B
