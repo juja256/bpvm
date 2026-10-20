@@ -104,7 +104,8 @@ with volatile access.
 ## Benchmarks
 
 `cargo run --release -p bpvm-cli [--features parallel] -- --backend bp|bppp <elf>`: execute,
-prove, verify (2026-10-20, bulletproofs fork branch `bppp-bpvm`, `65519bd`). BP size is in
+prove, verify (2026-10-20, bulletproofs fork `main` `f9f540a`; BP++ with the default
+`bppp-vartime`). BP size is in
 multipliers (padded to a power of two); BP++ size is gates $N_p + N_m$ plus linear slots
 $N_{lin}$ (free witnesses, multiplicities and copies; they cost no gate but lengthen the
 commitments).
@@ -112,27 +113,23 @@ commitments).
 | guest | steps | backend | size | proof | serial prove / verify | parallel prove / verify | parallel RSS |
 |---|---|---|---|---|---|---|---|
 | `guest/fib/fib.elf` — C, F(10) | 78 | BP | 4 424 ($2^{13}$) | 1345 B | 0.51 s / 40 ms | 0.36 s / 37 ms | |
-| | | BP++ | 2 450 + 1 683 | 945 B | 0.33 s / 18 ms | 0.25 s / 17 ms | |
+| | | BP++ | 2 450 + 1 683 | 945 B | 0.27 s / 16 ms | 0.22 s / 16 ms | |
 | `guest/balance/balance.elf` — C, 4 committed inputs, 1 committed output | 72 | BP | 4 769 ($2^{13}$) | 1345 B | 0.49 s / 41 ms | | |
-| | | BP++ | 2 368 + 2 579 | 977 B | 0.41 s / 32 ms | | |
+| | | BP++ | 2 368 + 2 579 | 977 B | 0.27 s / 19 ms | | |
 | `guest/sha256/sha256.elf` — C, SHA-256("abc"), one block | 5 904 | BP | 314 536 ($2^{19}$) | 1729 B | 30.7 s / 2.49 s | 4.62 s / 0.43 s | 0.50 GB |
-| | | BP++ | 178 651 + 105 359 | 1329 B | 22.0 s / 1.09 s | 3.52 s / 0.39 s | 0.75 GB |
+| | | BP++ | 178 651 + 105 359 | 1329 B | 15.6 s / 1.05 s | 2.90 s / 0.37 s | 0.76 GB |
 | `guest-rs/ec-mini/ec_mini.elf` — Rust, dependency-free secp256k1 $G+2G$ (Jacobian add + check against $3G$) | 20 713 | BP | 977 716 ($2^{20}$) | 1793 B | 75.8 s / 5.24 s | 11.6 s / 1.06 s | 1.13 GB |
-| | | BP++ | 578 989 + 263 047 | 1457 B | 68.1 s / 3.32 s | 10.6 s / 1.15 s | 2.14 GB |
+| | | BP++ | 578 989 + 263 047 | 1457 B | 49.5 s / 3.18 s | 8.89 s / 1.09 s | 2.15 GB |
 | `guest-rs/ec-add/ec_add.elf` — Rust, `k256`: $G+2G$, decode + to_affine | 253 556 | BP | 12 407 583 ($2^{24}$) | 2049 B | did not fit in 24 GB | 166 s / 16.4 s | 10.1 GB |
-| | | BP++ | 7 262 452 + 3 529 272 | 1649 B | | 132 s / 15.6 s | 8.5–11.4 GB |
+| | | BP++ | 7 262 452 + 3 529 272 | 1649 B | | 110 s / 16.0 s | 10.9 GB |
 
 BP++ proofs are 400 B smaller at every size, and BP++ proves with 40% fewer gates. It proves
-faster than BP everywhere: 10–35% single-threaded, 9–31% multi-threaded. It verifies 1.6–2.3x
+faster than BP everywhere: 35–49% single-threaded, 23–39% multi-threaded. It verifies 1.6–2.5x
 faster single-threaded. Multi-threaded, the two verifiers are about even: BP++ is faster on fib,
-sha256 and `ec_add`, and 8% slower on `ec_mini`. The remaining sequential part of the BP++
+sha256 and `ec_add`, and 3% slower on `ec_mini`. The remaining sequential part of the BP++
 verifier is the SHA3 digest of the circuit, which is bound into the transcript before any
 challenge. On mid-size circuits BP++ needs more memory (gates and linear slots each carry a
-generator). The `ec_add` RSS of BP++ varies between runs on macOS while its heap peak does not
-(allocator caches). Single-threaded BP++ RSS is not shown; it was measured while other jobs
-ran. The BP++ rows were measured with the constant-time norm argument (`--no-default-features`
-was not needed then: `bppp-vartime` became the default later); with `bppp-vartime` `ec_mini`
-proves about 13% faster.
+generator); the RSS of the largest runs varies between runs on macOS (allocator caches).
 
 The fork's serial code is also faster than the original prover (`ec_mini`: 76 s / 5.3 s
 against 92 s / 14 s). Prover memory went from ≈ 3.4 KB to ≈ 1 KB per BP multiplier, ≈ 320 B
