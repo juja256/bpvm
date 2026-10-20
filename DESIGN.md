@@ -178,9 +178,8 @@ uses memory-mapped I/O variables in sections `.bpvm.<kind>.<type>` (`guest/commo
 ## 6. Backend outlook
 
 - **Bulletproofs++** (done, M6): the reciprocal argument is built in. Measured: proofs
-  400 B smaller, 40% fewer gates. Proving is faster single-threaded and about equal
-  multi-threaded. Verification is faster single-threaded but slower multi-threaded at
-  $2^{24}$, because compilation and checks are still sequential in the fork.
+  400 B smaller, 40% fewer gates. Proving is faster single- and multi-threaded. Verification
+  is 1.6–2.3x faster single-threaded and about even multi-threaded (README, Benchmarks).
 - **Sumcheck + IPA** (Spartan/Jolt with a Hyrax or Bulletproofs-IPA polynomial commitment)
   exploits the uniformity of the CPU chip: the prover stays DL-only and transparent, and
   verifier work drops from $O(n)$ circuit evaluation to sumcheck plus one MSM.
@@ -197,8 +196,8 @@ uses memory-mapped I/O variables in sections `.bpvm.<kind>.<type>` (`guest/commo
   memory ≈ 3x lower and an optional multi-threaded prover/verifier in the bulletproofs fork
   (identical proofs). Open: hide the instruction mix, capacity tuning, a Rust I/O macro crate.
 - **M6** ✅ BP++ backend: the circuit on the fork's `CircuitBuilder`, `--backend bp|bppp`,
-  tests and tampers on both backends, benchmarks. Open: parallel compilation and checks in
-  the BP++ verifier, BP++ prover memory, a sumcheck backend.
+  tests and tampers on both backends, benchmarks; the BP++ verifier parallelised in the fork
+  (2026-10-20). Open: BP++ prover memory, a sumcheck backend.
 
 ## Notes on the fork
 
