@@ -41,7 +41,7 @@ dependencies = [
 [[package]]
 name = "bulletproofs"
 version = "5.0.1"
-source = "git+https://github.com/juja256/bulletproofs?rev=5b4439b79ec3eaff0380b78c3319b0f4f630b0cd#5b4439b79ec3eaff0380b78c3319b0f4f630b0cd"
+source = "git+https://github.com/juja256/bulletproofs?rev=f512a21b08386afd027064303576489bd0589789#f512a21b08386afd027064303576489bd0589789"
 dependencies = [
  "byteorder",
  "clear_on_drop",
@@ -56,6 +56,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_derive",
+ "sha2",
  "sha3",
  "subtle",
  "thiserror",
@@ -409,6 +410,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]

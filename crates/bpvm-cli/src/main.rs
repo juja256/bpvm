@@ -3,11 +3,15 @@
 //! ```text
 //! bpvm run    <elf> [-i input.json]                                   execute only
 //! bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp]
-//!                                                                     execute and prove
+//!             [--transcript merlin|sha256]                            execute and prove
 //! bpvm verify <elf> <proof.json> [--backend bp|bppp]                verify
-//! bpvm [--no-prove] [--backend bp|bppp] <elf> [-i input.json]
+//! bpvm [--no-prove] [--backend bp|bppp] [--transcript merlin|sha256] <elf> [-i input.json]
 //!                                               demo: prove, verify, reject a forged exit code
 //! ```
+//!
+//! `--transcript` picks the Fiat–Shamir transcript: `merlin` (the default) or `sha256`
+//! (SHA-256 only, for verifiers without Keccak such as Simplicity on Liquid). The proof file
+//! records it, and `verify` uses the one recorded (`merlin` if the file names none).
 //!
 //! `--backend` picks the proof system: `bp` (Bulletproofs, the default) or `bppp`
 //! (Bulletproofs++, experimental: smaller proofs, faster verification). The verifier reads the
@@ -26,7 +30,7 @@ use std::process::ExitCode;
 
 use bpvm_emu::{Image, IoKind, IoType, IoVar, Machine};
 use bpvm_zk::isa::Op;
-use bpvm_zk::{Backend, Committed, IoSpec, Statement};
+use bpvm_zk::{Backend, Committed, IoSpec, Statement, TranscriptKind};
 use bulletproofs::r1cs::R1CSProof;
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::scalar::Scalar;
@@ -37,9 +41,9 @@ const MAX_STEPS: u64 = 1 << 20;
 const PROOF_FILE_VERSION: u64 = 2;
 const USAGE: &str = "usage:
   bpvm run    <elf> [-i input.json]
-  bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp]
+  bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp] [--transcript merlin|sha256]
   bpvm verify <elf> <proof.json> [--backend bp|bppp]
-  bpvm [--no-prove] [--backend bp|bppp] <elf> [-i input.json]";
+  bpvm [--no-prove] [--backend bp|bppp] [--transcript merlin|sha256] <elf> [-i input.json]";
 
 struct Args {
     positional: Vec<String>,
@@ -53,7 +57,7 @@ fn parse_args() -> Result<Args, String> {
     while let Some(x) = it.next() {
         match x.as_str() {
             "--no-prove" => a.no_prove = true,
-            "-i" | "-o" | "-s" | "--backend" => {
+            "-i" | "-o" | "-s" | "--backend" | "--transcript" => {
                 let v = it.next().ok_or(format!("{x} needs a value"))?;
                 a.flags.insert(x, v);
             }
@@ -68,20 +72,25 @@ fn backend_of(a: &Args) -> Result<Backend, String> {
     a.flags.get("--backend").map_or(Ok(Backend::Bp), |b| b.parse().map_err(|e| format!("{b:?}: {e}")))
 }
 
+fn transcript_of(a: &Args) -> Result<TranscriptKind, String> {
+    a.flags.get("--transcript").map_or(Ok(TranscriptKind::Merlin), |t| t.parse().map_err(|e| format!("{t:?}: {e}")))
+}
+
 fn main() -> ExitCode {
     let res = parse_args().and_then(|a| {
         let p = &a.positional;
         let backend = backend_of(&a)?;
+        let kind = transcript_of(&a)?;
         match p.first().map(String::as_str) {
-            Some("run") if p.len() == 2 => run(&p[1], a.flags.get("-i"), Mode::Run, backend),
+            Some("run") if p.len() == 2 => run(&p[1], a.flags.get("-i"), Mode::Run, backend, kind),
             Some("prove") if p.len() == 2 => {
                 let stem = p[1].strip_suffix(".elf").unwrap_or(&p[1]).to_string();
                 let out = a.flags.get("-o").cloned().unwrap_or(format!("{stem}.proof.json"));
                 let sec = a.flags.get("-s").cloned().unwrap_or(format!("{stem}.secrets.json"));
-                run(&p[1], a.flags.get("-i"), Mode::Prove { out, sec }, backend)
+                run(&p[1], a.flags.get("-i"), Mode::Prove { out, sec }, backend, kind)
             }
             Some("verify") if p.len() == 3 => verify(&p[1], &p[2], a.flags.contains_key("--backend").then_some(backend)),
-            Some(_) if p.len() == 1 => run(&p[0], a.flags.get("-i"), if a.no_prove { Mode::Run } else { Mode::Demo }, backend),
+            Some(_) if p.len() == 1 => run(&p[0], a.flags.get("-i"), if a.no_prove { Mode::Run } else { Mode::Demo }, backend, kind),
             _ => Err(USAGE.into()),
         }
     });
@@ -220,7 +229,7 @@ fn group(names: &[String], items: impl IntoIterator<Item = Value>) -> Value {
 
 // ---------- run / prove ----------
 
-fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend) -> Result<(), String> {
+fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend, kind: TranscriptKind) -> Result<(), String> {
     let mut img = load(path)?;
     println!("loaded {path}: entry {:#x}, {} code words, {} RAM words", img.entry, img.code.len(), img.data.len());
 
@@ -287,22 +296,22 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend) -> Resu
 
     let proved = match mode {
         Mode::Run => return Ok(()),
-        _ => bpvm_zk::prove(&stmt, &wit, backend).map_err(|e| format!("prover: {e:?}"))?,
+        _ => bpvm_zk::prove_with(&stmt, &wit, backend, kind).map_err(|e| format!("prover: {e:?}"))?,
     };
     let (proof, stats) = proved;
     match backend {
-        Backend::Bp => println!("proved:   bp, {} multipliers (padded to {}), proof {} bytes, {:.2?}", stats.gates, stats.gens_capacity, stats.proof_bytes, stats.time),
-        _ => println!("proved:   bppp, {} gates, {} linear slots, proof {} bytes, {:.2?}", stats.gates, stats.linear, stats.proof_bytes, stats.time),
+        Backend::Bp => println!("proved:   bp ({}), {} multipliers (padded to {}), proof {} bytes, {:.2?}", kind.name(), stats.gates, stats.gens_capacity, stats.proof_bytes, stats.time),
+        _ => println!("proved:   bppp ({}), {} gates, {} linear slots, proof {} bytes, {:.2?}", kind.name(), stats.gates, stats.linear, stats.proof_bytes, stats.time),
     }
 
     match mode {
         Mode::Run => unreachable!(),
         Mode::Demo => {
-            let t = bpvm_zk::verify(&stmt, &proof).map_err(|e| format!("verifier rejected: {e:?}"))?;
+            let t = bpvm_zk::verify_with(&stmt, &proof, kind).map_err(|e| format!("verifier rejected: {e:?}"))?;
             println!("verified: program halts with exit code {} after {} steps ({t:.2?})", stmt.exit_code, stmt.steps);
             let mut forged = stmt.clone();
             forged.exit_code ^= 1;
-            match bpvm_zk::verify(&forged, &proof) {
+            match bpvm_zk::verify_with(&forged, &proof, kind) {
                 Err(_) => println!("sanity:   the same proof is rejected for exit code {}", forged.exit_code),
                 Ok(_) => return Err("proof verified against a forged exit code".into()),
             }
@@ -316,6 +325,7 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend) -> Resu
             let proof_file = json!({
                 "bpvm": PROOF_FILE_VERSION,
                 "backend": backend.name(),
+                "transcript": kind.name(),
                 "steps": stmt.steps,
                 "exit_code": stmt.exit_code,
                 "op_counts": op_counts,
@@ -360,6 +370,11 @@ fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), 
     if let Some(b) = require.filter(|b| *b != proof.backend()) {
         return Err(format!("{proof_path}: a {} proof, but --backend {} was required", proof.backend(), b));
     }
+
+    let kind: TranscriptKind = match f.get("transcript") {
+        None => TranscriptKind::Merlin,
+        Some(t) => t.as_str().ok_or(format!("{proof_path}: \"transcript\" must be a string"))?.parse().map_err(|e| format!("{proof_path}: transcript: {e}"))?,
+    };
 
     let mut op_counts = BTreeMap::new();
     for (name, n) in obj("op_counts")? {
@@ -413,9 +428,9 @@ fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), 
         return Err(format!("{proof_path}: the op counts do not add up to the steps"));
     }
     let stmt = Statement::new(&img, steps, op_counts, exit_code, private_in, private_out, public_out);
-    let t = bpvm_zk::verify(&stmt, &proof).map_err(|e| format!("verifier rejected: {e:?}"))?;
+    let t = bpvm_zk::verify_with(&stmt, &proof, kind).map_err(|e| format!("verifier rejected: {e:?}"))?;
 
-    println!("verified ({t:.2?}, {}): {path} halts with exit code {} after {} steps", proof.backend(), stmt.exit_code, stmt.steps);
+    println!("verified ({t:.2?}, {}, {}): {path} halts with exit code {} after {} steps", kind.name(), proof.backend(), stmt.exit_code, stmt.steps);
     for (k, v) in &public_in {
         println!("  public input   {k} = {v}");
     }

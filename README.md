@@ -41,13 +41,22 @@ CPU row costs 22 gates instead of 35.5 multipliers; proofs are 400 B smaller and
 is faster single-threaded. The verifier reads the backend from the proof (`verify --backend`
 requires one).
 
+**Transcripts.** `--transcript merlin` (default) is Merlin, as upstream. `--transcript sha256`
+uses the fork's `Sha256Transcript`
+([docs/sha256-transcript.md](https://github.com/juja256/bulletproofs/blob/main/docs/sha256-transcript.md)):
+Fiat–Shamir on SHA-256 alone, so that a verifier without Keccak can recompute the challenges.
+The target is a Simplicity verifier on Liquid. Proof sizes and times are the same: fib is
+1345 B on BP and 945 B on BP++ either way. The proof file records the transcript, and
+`verify` follows it. In code: `bpvm_zk::prove_with` / `verify_with` with a `TranscriptKind`.
+
 Command line:
 
 ```
 bpvm run    <elf> [-i input.json]                                   execute only
 bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp]
+            [--transcript merlin|sha256]
 bpvm verify <elf> <proof.json> [--backend bp|bppp]
-bpvm [--no-prove] [--backend bp|bppp] <elf> [-i input.json]
+bpvm [--no-prove] [--backend bp|bppp] [--transcript merlin|sha256] <elf> [-i input.json]
                                               demo: prove, verify, reject a forged exit code
 ```
 

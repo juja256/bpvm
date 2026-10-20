@@ -325,3 +325,29 @@ fn reject_program_other_than_executed() {
         assert!(bpvm_zk::verify(&stmt, &proof).is_err(), "{backend:?}: a program other than the executed one verified");
     }
 }
+
+// ---- the SHA-256 transcript (a verifier with SHA-256 only, such as Simplicity) ----
+
+/// The same program proven under SHA-256 Fiat–Shamir on both backends: the proof verifies
+/// under SHA-256 only, and the proof size does not change.
+#[test]
+fn sha256_transcript_proofs() {
+    use bpvm_zk::TranscriptKind;
+    let img = small_program();
+    let t = exec(&img);
+    let (stmt, wit) = bpvm_zk::witness(&img, &t).unwrap();
+    for backend in BACKENDS {
+        let (proof, stats) = bpvm_zk::prove_with(&stmt, &wit, backend, TranscriptKind::Sha256).unwrap();
+        let (merlin_proof, merlin_stats) = bpvm_zk::prove(&stmt, &wit, backend).unwrap();
+        assert_eq!(stats.proof_bytes, merlin_stats.proof_bytes);
+        bpvm_zk::verify_with(&stmt, &proof, TranscriptKind::Sha256).unwrap();
+        assert!(bpvm_zk::verify(&stmt, &proof).is_err(), "{backend:?}: a SHA-256 proof verified under Merlin");
+        assert!(bpvm_zk::verify_with(&stmt, &merlin_proof, TranscriptKind::Sha256).is_err(), "{backend:?}: a Merlin proof verified under SHA-256");
+        let mut forged = stmt.clone();
+        forged.exit_code ^= 1;
+        assert!(bpvm_zk::verify_with(&forged, &proof, TranscriptKind::Sha256).is_err(), "{backend:?}: forged exit code");
+    }
+    assert_eq!("sha256".parse::<TranscriptKind>().unwrap(), TranscriptKind::Sha256);
+    assert_eq!(TranscriptKind::default(), TranscriptKind::Merlin);
+    assert_eq!(TranscriptKind::Sha256.name(), "sha256");
+}

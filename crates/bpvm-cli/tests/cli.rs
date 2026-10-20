@@ -61,3 +61,28 @@ fn prove_and_verify_with_both_backends() {
         reject("exit", &|v| v["exit_code"] = 54.into(), "verifier rejected");
     }
 }
+
+/// `--transcript sha256`: the proof file records the transcript and `verify` follows it; the
+/// same proof under another transcript name is rejected.
+#[test]
+fn prove_and_verify_under_sha256() {
+    let Some(elf) = fib() else { return };
+    for b in ["bp", "bppp"] {
+        let (proof, sec) = (tmp(&format!("fib-sha-{b}.proof.json")), tmp(&format!("fib-sha-{b}.secrets.json")));
+        let (ok, out) = bpvm(&["prove", &elf, "--backend", b, "--transcript", "sha256", "-o", proof.to_str().unwrap(), "-s", sec.to_str().unwrap()]);
+        assert!(ok, "{out}");
+        assert!(out.contains("(sha256)"), "{out}");
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&proof).unwrap()).unwrap();
+        assert_eq!(v["transcript"], "sha256");
+        let (ok, out) = bpvm(&["verify", &elf, proof.to_str().unwrap()]);
+        assert!(ok && out.contains("sha256"), "{out}");
+        let (ok, _) = verify_edited(&elf, &proof, &format!("fib-sha-{b}-as-merlin.json"), |v| v["transcript"] = "merlin".into(), &[]);
+        assert!(!ok, "{b}: a SHA-256 proof verified as merlin");
+        let (ok, _) = verify_edited(&elf, &proof, &format!("fib-sha-{b}-unnamed.json"), |v| { v.as_object_mut().unwrap().remove("transcript"); }, &[]);
+        assert!(!ok, "{b}: a SHA-256 proof verified with no transcript named (merlin)");
+        let (ok, out) = verify_edited(&elf, &proof, &format!("fib-sha-{b}-bad.json"), |v| v["transcript"] = "keccak".into(), &[]);
+        assert!(!ok && out.contains("transcript"), "{out}");
+    }
+    let (ok, out) = bpvm(&["--transcript", "sha256", &elf]);
+    assert!(ok && out.contains("sanity"), "{out}");
+}

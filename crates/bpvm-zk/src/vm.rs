@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use bpvm_emu::{Image, Trace};
 use bulletproofs::r1cs::{Backend, CircuitBuilder, Cost, Prover, R1CSError, R1CSProof, Variable, Verifier};
-use bulletproofs::{BulletproofGens, PedersenGens};
+use bulletproofs::{BulletproofGens, PedersenGens, Sha256Transcript, TranscriptBackend};
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
@@ -100,7 +100,7 @@ impl Statement {
 
     /// Absorb the statement into the transcript (strong Fiat–Shamir: the R1CS transcript
     /// does not hash the constraint system itself).
-    fn bind(&self, t: &mut Transcript) {
+    fn bind<T: TranscriptBackend + ?Sized>(&self, t: &mut T) {
         t.append_message(b"bpvm-version", b"1");
         t.append_u64(b"entry", self.entry as u64);
         t.append_u64(b"steps", self.steps as u64);
@@ -394,7 +394,7 @@ fn gens_for(n: usize) -> std::sync::RwLockReadGuard<'static, BulletproofGens> {
     lock.read().unwrap()
 }
 
-fn commit_prover(prover: &mut Prover<'_, &mut Transcript>, st: &Statement, wit: &Witness) -> Result<Vec<Variable>, R1CSError> {
+fn commit_prover<T: TranscriptBackend>(prover: &mut Prover<'_, &mut T>, st: &Statement, wit: &Witness) -> Result<Vec<Variable>, R1CSError> {
     let expected = st.private_in.iter().chain(&st.private_out);
     if wit.openings.len() != st.private_in.len() + st.private_out.len() {
         return Err(R1CSError::GadgetError { description: "openings do not match the statement".into() });
@@ -421,16 +421,61 @@ pub fn cost(st: &Statement) -> Result<Cost, R1CSError> {
     Ok(verifier.cost())
 }
 
+/// The Fiat–Shamir transcript of a proof. Not part of the proof's encoding: the verifier must
+/// use the prover's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TranscriptKind {
+    /// Merlin (STROBE over Keccak), the default.
+    #[default]
+    Merlin,
+    /// SHA-256 only (`bulletproofs::Sha256Transcript`), for verifiers without Keccak such as
+    /// Simplicity on Liquid.
+    Sha256,
+}
+
+impl TranscriptKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            TranscriptKind::Merlin => "merlin",
+            TranscriptKind::Sha256 => "sha256",
+        }
+    }
+}
+
+impl std::str::FromStr for TranscriptKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "merlin" => Ok(TranscriptKind::Merlin),
+            "sha256" => Ok(TranscriptKind::Sha256),
+            _ => Err("expected merlin or sha256".into()),
+        }
+    }
+}
+
+/// Prove under Merlin ([`prove_with`] picks the transcript).
 pub fn prove(st: &Statement, wit: &Witness, backend: Backend) -> Result<(R1CSProof, Stats), R1CSError> {
     prove_staged(st, wit, backend, |_| {})
 }
 
+/// [`prove`] under the transcript `kind`.
+pub fn prove_with(st: &Statement, wit: &Witness, backend: Backend, kind: TranscriptKind) -> Result<(R1CSProof, Stats), R1CSError> {
+    match kind {
+        TranscriptKind::Merlin => prove_in(Transcript::new(b"bpvm"), st, wit, backend, |_| {}),
+        TranscriptKind::Sha256 => prove_in(Sha256Transcript::new(b"bpvm"), st, wit, backend, |_| {}),
+    }
+}
+
 /// [`prove`] with a callback after each stage ("synthesized"), for profiling.
 #[doc(hidden)]
-pub fn prove_staged(st: &Statement, wit: &Witness, backend: Backend, mut stage: impl FnMut(&'static str)) -> Result<(R1CSProof, Stats), R1CSError> {
+pub fn prove_staged(st: &Statement, wit: &Witness, backend: Backend, stage: impl FnMut(&'static str)) -> Result<(R1CSProof, Stats), R1CSError> {
+    prove_in(Transcript::new(b"bpvm"), st, wit, backend, stage)
+}
+
+fn prove_in<T: TranscriptBackend>(mut transcript: T, st: &Statement, wit: &Witness, backend: Backend, mut stage: impl FnMut(&'static str)) -> Result<(R1CSProof, Stats), R1CSError> {
     let start = Instant::now();
     let pc_gens = PedersenGens::default();
-    let mut transcript = Transcript::new(b"bpvm");
     st.bind(&mut transcript);
     let mut prover = Prover::new(&pc_gens, &mut transcript);
     prover.set_backend(backend);
@@ -445,11 +490,22 @@ pub fn prove_staged(st: &Statement, wit: &Witness, backend: Backend, mut stage: 
 }
 
 /// Verify with the backend that produced `proof` (each backend is a sound proof system on
-/// its own; the encoding names it).
+/// its own; the encoding names it), under Merlin ([`verify_with`] picks the transcript).
 pub fn verify(st: &Statement, proof: &R1CSProof) -> Result<Duration, R1CSError> {
+    verify_with(st, proof, TranscriptKind::Merlin)
+}
+
+/// [`verify`] under the transcript `kind` (the prover's).
+pub fn verify_with(st: &Statement, proof: &R1CSProof, kind: TranscriptKind) -> Result<Duration, R1CSError> {
+    match kind {
+        TranscriptKind::Merlin => verify_in(Transcript::new(b"bpvm"), st, proof),
+        TranscriptKind::Sha256 => verify_in(Sha256Transcript::new(b"bpvm"), st, proof),
+    }
+}
+
+fn verify_in<T: TranscriptBackend>(mut transcript: T, st: &Statement, proof: &R1CSProof) -> Result<Duration, R1CSError> {
     let start = Instant::now();
     let pc_gens = PedersenGens::default();
-    let mut transcript = Transcript::new(b"bpvm");
     st.bind(&mut transcript);
     let mut verifier = Verifier::new(&mut transcript);
     verifier.set_backend(proof.backend());
