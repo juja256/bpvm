@@ -41,6 +41,7 @@ dependencies = [
 [[package]]
 name = "bulletproofs"
 version = "5.0.1"
+source = "git+https://github.com/zero-art-rs/bulletproofs?rev=f9f540ab29b54cf12bc5d6ac85e095602b4d63cf#f9f540ab29b54cf12bc5d6ac85e095602b4d63cf"
 dependencies = [
  "byteorder",
  "clear_on_drop",
