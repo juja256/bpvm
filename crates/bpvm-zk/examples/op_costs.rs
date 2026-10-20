@@ -21,7 +21,7 @@ fn load(path: &str) -> Statement {
 
 /// (BP multipliers, BP++ gates, BP++ linear slots).
 fn measures(c: &Cost) -> [f64; 3] {
-    [(c.bp_phase1 + c.bp_phase2) as f64, c.bppp_gates as f64, c.bppp_lin as f64]
+    [(c.bp_phase1 + c.bp_phase2) as f64, c.bppp_gates as f64, c.bppp_linear as f64]
 }
 
 fn main() {

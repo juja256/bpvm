@@ -263,20 +263,20 @@ fn synthesize<CS: CircuitBuilder>(cs: &mut CS, st: &Statement, wit: Option<&Witn
     for k in 0..st.steps {
         let r = wit.map(|w| &w.cpu[k]);
         let f = r.map(|r| r.fields);
-        let op = env.alloc(f.map(|f| f.op as u64))?;
-        let rd = env.alloc(f.map(|f| f.rd as u64))?;
-        let rs1 = env.alloc(f.map(|f| f.rs1 as u64))?;
-        let rs2 = env.alloc(f.map(|f| f.rs2 as u64))?;
-        let imm = env.alloc(f.map(|f| f.imm as u64))?;
-        let wr = env.alloc(f.map(|f| f.wr as u64))?;
+        let op = env.witness(f.map(|f| f.op as u64))?;
+        let rd = env.witness(f.map(|f| f.rd as u64))?;
+        let rs1 = env.witness(f.map(|f| f.rs1 as u64))?;
+        let rs2 = env.witness(f.map(|f| f.rs2 as u64))?;
+        let imm = env.witness(f.map(|f| f.imm as u64))?;
+        let wr = env.witness(f.map(|f| f.wr as u64))?;
         env.fetch(&[pc.clone(), op.into(), rd.into(), rs1.into(), rs2.into(), imm.into(), wr.into()])?;
 
-        let v1 = env.alloc(r.map(|r| r.v1 as u64))?;
-        let v2 = env.alloc(r.map(|r| r.v2 as u64))?;
-        let vd = env.alloc(r.map(|r| r.vd as u64))?;
-        let next_pc = env.alloc(r.map(|r| r.next_pc as u64))?;
-        let old = env.alloc(r.map(|r| r.old as u64))?;
-        let tp: Vec<_> = (0..3).map(|i| env.alloc(r.map(|r| r.t_prev[i]))).collect::<Result<_, _>>()?;
+        let v1 = env.witness(r.map(|r| r.v1 as u64))?;
+        let v2 = env.witness(r.map(|r| r.v2 as u64))?;
+        let vd = env.witness(r.map(|r| r.vd as u64))?;
+        let next_pc = env.witness(r.map(|r| r.next_pc as u64))?;
+        let old = env.witness(r.map(|r| r.old as u64))?;
+        let tp: Vec<_> = (0..3).map(|i| env.witness(r.map(|r| r.t_prev[i]))).collect::<Result<_, _>>()?;
 
         let delta = env.mul(wr.into(), vd - old);
         let new = old + delta;
@@ -287,11 +287,11 @@ fn synthesize<CS: CircuitBuilder>(cs: &mut CS, st: &Statement, wit: Option<&Witn
         for (i, (key, read, write)) in accesses.into_iter().enumerate() {
             let t = 4 * k64 + 1 + i as u64;
             env.range_bits(lc(s(t)) - tp[i] - Scalar::ONE, r.map(|r| t - 1 - r.t_prev[i]), TS_BITS)?;
-            env.mem.add(vec![key.into(), read, tp[i].into()]);
-            env.mem.sub(vec![key.into(), write, lc(s(t))]);
+            env.mem_read(&[key.into(), read, tp[i].into()])?;
+            env.mem_write(&[key.into(), write, lc(s(t))])?;
         }
 
-        env.bus.add(vec![op.into(), lc(s(k64)), pc.clone(), next_pc.into(), imm.into(), v1.into(), v2.into(), vd.into()]);
+        env.bus_send(&[op.into(), lc(s(k64)), pc.clone(), next_pc.into(), imm.into(), v1.into(), v2.into(), vd.into()])?;
 
         if k + 1 == st.steps {
             env.constrain(op - Op::ECALL.id());
@@ -309,11 +309,11 @@ fn synthesize<CS: CircuitBuilder>(cs: &mut CS, st: &Statement, wit: Option<&Witn
 
     // Memory boundary: Init (public, free) and Final (witness).
     for r in 0..32u64 {
-        env.mem.add_public(lc(-Scalar::ONE), vec![r, 0, 0]);
+        env.mem_init(&[r, 0, 0])?;
         let fin = wit.map(|w| w.final_regs[r as usize]);
-        let v = env.alloc(fin.map(|f| f.0 as u64))?;
-        let t = env.alloc(fin.map(|f| f.1))?;
-        env.mem.add(vec![lc(s(r)), v.into(), t.into()]);
+        let v = env.witness(fin.map(|f| f.0 as u64))?;
+        let t = env.witness(fin.map(|f| f.1))?;
+        env.mem_read(&[lc(s(r)), v.into(), t.into()])?;
     }
     let (cin, cout) = committed.split_at(st.private_in.len());
     // word address -> (index of the committed value, limb index)
@@ -328,19 +328,19 @@ fn synthesize<CS: CircuitBuilder>(cs: &mut CS, st: &Statement, wit: Option<&Witn
     for (j, (addr, init)) in st.ram.iter().enumerate() {
         let key = ram_key(*addr);
         match in_limbs.get(addr) {
-            None => env.mem.add_public(lc(-Scalar::ONE), vec![key, *init as u64, 0]),
+            None => env.mem_init(&[key, *init as u64, 0])?,
             Some(&(i, k)) => {
                 let w = wit.map(|w| w.init_ram[addr]);
-                let v = env.alloc(w.map(u64::from))?;
+                let v = env.witness(w.map(u64::from))?;
                 env.range32(v.into(), w)?;
                 in_sum[i] = in_sum[i].clone() - v * pow2(32 * k as u32);
-                env.mem.sub(vec![lc(key), v.into(), lc(Scalar::ZERO)]);
+                env.mem_write(&[lc(key), v.into(), lc(Scalar::ZERO)])?;
             }
         }
         let fin = wit.map(|w| w.final_ram[j]);
-        let v = env.alloc(fin.map(|f| f.0 as u64))?;
-        let t = env.alloc(fin.map(|f| f.1))?;
-        env.mem.add(vec![lc(key), v.into(), t.into()]);
+        let v = env.witness(fin.map(|f| f.0 as u64))?;
+        let t = env.witness(fin.map(|f| f.1))?;
+        env.mem_read(&[lc(key), v.into(), t.into()])?;
         if let Some(&(i, k)) = out_limbs.get(addr) {
             out_sum[i] = out_sum[i].clone() - v * pow2(32 * k as u32);
         }
@@ -355,35 +355,32 @@ fn synthesize<CS: CircuitBuilder>(cs: &mut CS, st: &Statement, wit: Option<&Witn
     for x in in_sum.into_iter().chain(out_sum) {
         env.constrain(x);
     }
-
-    env.finish()
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
 pub struct Stats {
     pub backend: Backend,
     /// BP: multipliers; BP++: gates ($N_p + N_m$).
-    pub multipliers: usize,
+    pub gates: usize,
     /// BP++: the length of the linear part of the commitments ($N_{lin}$: free witnesses,
     /// multiplicities, copies); BP: 0.
     pub linear: usize,
-    /// Generators needed (BP: multipliers rounded up to a power of two).
-    pub padded: usize,
+    /// The `BulletproofGens` capacity the proof needs (BP: the multipliers rounded up to a power
+    /// of two).
+    pub gens_capacity: usize,
     pub proof_bytes: usize,
     pub time: Duration,
 }
 
 impl Stats {
     fn new(backend: Backend, cost: &Cost) -> Stats {
-        let (multipliers, linear) = match backend {
-            Backend::Bp => (cost.bp_phase1 + cost.bp_phase2, 0),
-            _ => (cost.bppp_gates, cost.bppp_lin),
-        };
-        Stats { backend, multipliers, linear, padded: cost.gens_capacity(backend), proof_bytes: 0, time: Duration::ZERO }
+        let (gates, linear, gens_capacity) = (cost.gates(backend), cost.linear(backend), cost.gens_capacity(backend));
+        Stats { backend, gates, linear, gens_capacity, proof_bytes: 0, time: Duration::ZERO }
     }
 }
 
-/// Generators for `n` multipliers, shared across proofs and verifications in this process
+/// Generators of capacity at least `n`, shared across proofs and verifications in this process
 /// (deriving them is a hash-to-group per point). The cache only grows: it keeps
 /// 320 bytes per generator pair for the largest circuit seen so far.
 fn gens_for(n: usize) -> std::sync::RwLockReadGuard<'static, BulletproofGens> {
@@ -424,11 +421,6 @@ pub fn cost(st: &Statement) -> Result<Cost, R1CSError> {
     Ok(verifier.cost())
 }
 
-/// The number of BP multipliers of the circuit for `st`.
-pub fn multipliers(st: &Statement) -> Result<usize, R1CSError> {
-    cost(st).map(|c| c.bp_phase1 + c.bp_phase2)
-}
-
 pub fn prove(st: &Statement, wit: &Witness, backend: Backend) -> Result<(R1CSProof, Stats), R1CSError> {
     prove_staged(st, wit, backend, |_| {})
 }
@@ -446,7 +438,7 @@ pub fn prove_staged(st: &Statement, wit: &Witness, backend: Backend, mut stage: 
     synthesize(&mut prover, st, Some(wit), &committed)?;
     stage("synthesized");
     let mut stats = Stats::new(backend, &prover.cost());
-    let proof = prover.prove(&gens_for(stats.padded))?;
+    let proof = prover.prove(&gens_for(stats.gens_capacity))?;
     stats.proof_bytes = proof.to_bytes().len();
     stats.time = start.elapsed();
     Ok((proof, stats))

@@ -65,18 +65,7 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn backend_of(a: &Args) -> Result<Backend, String> {
-    match a.flags.get("--backend").map(String::as_str) {
-        None | Some("bp") => Ok(Backend::Bp),
-        Some("bppp") => Ok(Backend::Bppp),
-        Some(b) => Err(format!("unknown backend {b:?} (bp or bppp)")),
-    }
-}
-
-fn backend_name(b: Backend) -> &'static str {
-    match b {
-        Backend::Bp => "bp",
-        _ => "bppp",
-    }
+    a.flags.get("--backend").map_or(Ok(Backend::Bp), |b| b.parse().map_err(|e| format!("{b:?}: {e}")))
 }
 
 fn main() -> ExitCode {
@@ -302,8 +291,8 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend) -> Resu
     };
     let (proof, stats) = proved;
     match backend {
-        Backend::Bp => println!("proved:   bp, {} multipliers (padded to {}), proof {} bytes, {:.2?}", stats.multipliers, stats.padded, stats.proof_bytes, stats.time),
-        _ => println!("proved:   bppp, {} gates, {} linear slots, proof {} bytes, {:.2?}", stats.multipliers, stats.linear, stats.proof_bytes, stats.time),
+        Backend::Bp => println!("proved:   bp, {} multipliers (padded to {}), proof {} bytes, {:.2?}", stats.gates, stats.gens_capacity, stats.proof_bytes, stats.time),
+        _ => println!("proved:   bppp, {} gates, {} linear slots, proof {} bytes, {:.2?}", stats.gates, stats.linear, stats.proof_bytes, stats.time),
     }
 
     match mode {
@@ -326,7 +315,7 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend) -> Resu
             let op_counts: Map<String, Value> = stmt.op_counts.iter().map(|(op, n)| (format!("{op:?}"), json!(n))).collect();
             let proof_file = json!({
                 "bpvm": PROOF_FILE_VERSION,
-                "backend": backend_name(backend),
+                "backend": backend.name(),
                 "steps": stmt.steps,
                 "exit_code": stmt.exit_code,
                 "op_counts": op_counts,
@@ -365,11 +354,11 @@ fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), 
     let proof = R1CSProof::from_bytes(&unhex(get("proof")?.as_str().ok_or("proof must be a hex string")?)?)
         .map_err(|e| format!("bad proof: {e:?}"))?;
     let named = get("backend")?.as_str().ok_or(format!("{proof_path}: \"backend\" must be a string"))?;
-    if named != backend_name(proof.backend()) {
-        return Err(format!("{proof_path}: the file says backend {named:?}, the proof is {:?}", backend_name(proof.backend())));
+    if named != proof.backend().name() {
+        return Err(format!("{proof_path}: the file says backend {named:?}, the proof is {:?}", proof.backend().name()));
     }
     if let Some(b) = require.filter(|b| *b != proof.backend()) {
-        return Err(format!("{proof_path}: a {} proof, but --backend {} was required", backend_name(proof.backend()), backend_name(b)));
+        return Err(format!("{proof_path}: a {} proof, but --backend {} was required", proof.backend(), b));
     }
 
     let mut op_counts = BTreeMap::new();
@@ -426,7 +415,7 @@ fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), 
     let stmt = Statement::new(&img, steps, op_counts, exit_code, private_in, private_out, public_out);
     let t = bpvm_zk::verify(&stmt, &proof).map_err(|e| format!("verifier rejected: {e:?}"))?;
 
-    println!("verified ({t:.2?}, {}): {path} halts with exit code {} after {} steps", backend_name(proof.backend()), stmt.exit_code, stmt.steps);
+    println!("verified ({t:.2?}, {}): {path} halts with exit code {} after {} steps", proof.backend(), stmt.exit_code, stmt.steps);
     for (k, v) in &public_in {
         println!("  public input   {k} = {v}");
     }

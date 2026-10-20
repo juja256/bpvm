@@ -3,7 +3,7 @@
 use bpvm_zk::gadgets::{lc, s, Env, TAG_AND, TAG_OR, TAG_XOR};
 use bpvm_zk::isa::PROG_WIDTH;
 use bpvm_zk::Backend;
-use bulletproofs::r1cs::{CircuitBuilder, ConstraintSystem, Cost, Prover, R1CSError, R1CSProof, Verifier};
+use bulletproofs::r1cs::{CircuitBuilder, Cost, Prover, R1CSError, R1CSProof, Verifier};
 use bulletproofs::{BulletproofGens, PedersenGens};
 use merlin::Transcript;
 
@@ -16,16 +16,16 @@ fn env<CS: CircuitBuilder>(cs: &mut CS) -> Result<Env<'_, CS>, R1CSError> {
 /// `x < 2^bits` with `x` a witness; `value` is the prover's.
 fn range<CS: CircuitBuilder>(cs: &mut CS, value: Option<u64>, bits: u32) -> Result<(), R1CSError> {
     let mut e = env(cs)?;
-    let x = e.alloc(value)?;
+    let x = e.witness(value)?;
     e.range_bits(x.into(), value, bits)?;
-    e.finish()
+    Ok(())
 }
 
 /// `r = a op b` for public 32-bit `a, b, r`; `prover` says whether to assign witnesses.
 fn bitop<CS: CircuitBuilder>(cs: &mut CS, tag: u64, a: u32, b: u32, r: u32, prover: bool) -> Result<(), R1CSError> {
     let mut e = env(cs)?;
     e.bitop(tag, lc(s(a as u64)), lc(s(b as u64)), lc(s(r as u64)), prover.then_some((a, b, r)))?;
-    e.finish()
+    Ok(())
 }
 
 fn prove(backend: Backend, f: impl FnOnce(&mut Prover<'_, &mut Transcript>) -> Result<(), R1CSError>) -> Result<(R1CSProof, Cost), R1CSError> {
@@ -35,7 +35,7 @@ fn prove(backend: Backend, f: impl FnOnce(&mut Prover<'_, &mut Transcript>) -> R
     p.set_backend(backend);
     f(&mut p)?;
     let cost = p.cost();
-    let bp = BulletproofGens::new(cost.gens_capacity(backend).next_power_of_two(), 1);
+    let bp = BulletproofGens::new(cost.gens_capacity(backend), 1);
     Ok((p.prove(&bp)?, cost))
 }
 
@@ -45,7 +45,7 @@ fn verify(proof: &R1CSProof, f: impl FnOnce(&mut Verifier<&mut Transcript>) -> R
     let mut v = Verifier::new(&mut t);
     v.set_backend(proof.backend());
     f(&mut v)?;
-    let bp = BulletproofGens::new(v.cost().gens_capacity(proof.backend()).next_power_of_two(), 1);
+    let bp = BulletproofGens::new(v.cost().gens_capacity(proof.backend()), 1);
     v.verify(proof, &pc, &bp)
 }
 
@@ -85,7 +85,7 @@ fn digit<CS: CircuitBuilder>(cs: &mut CS, k: u32, x: u64, prover: bool) -> Resul
     let t = e.range_table(k);
     let d = e.cs.lookup_value(t, prover.then_some(x))?;
     e.cs.constrain(lc(d) - s(x));
-    e.finish()
+    Ok(())
 }
 
 #[test]
@@ -105,9 +105,9 @@ fn digits_outside_their_table_are_rejected() {
 /// is outside its table (a 3-bit digit 8, an 8-bit digit 256), so only the lookup catches it.
 fn range_with_digits<CS: CircuitBuilder>(cs: &mut CS, x: u64, digits: &[u64], bits: u32, prover: bool) -> Result<(), R1CSError> {
     let mut e = env(cs)?;
-    let xv = e.alloc(prover.then_some(x))?;
+    let xv = e.witness(prover.then_some(x))?;
     e.range_digits(xv.into(), prover.then(|| digits.to_vec()), bits)?;
-    e.finish()
+    Ok(())
 }
 
 #[test]

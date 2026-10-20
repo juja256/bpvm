@@ -83,8 +83,8 @@ pub struct Env<'a, CS: CircuitBuilder> {
     pow: TableId,
     bitop: TableId,
     fetch: TableId,
-    pub mem: Reciprocal,
-    pub bus: Reciprocal,
+    mem: Reciprocal,
+    bus: Reciprocal,
 }
 
 impl<'a, CS: CircuitBuilder> Env<'a, CS> {
@@ -99,11 +99,30 @@ impl<'a, CS: CircuitBuilder> Env<'a, CS> {
         Ok(Env { cs, range, pow, bitop, fetch, mem, bus })
     }
 
-    /// Record the memory and bus arguments (the tables are finalized at prove/verify).
-    pub fn finish(self) -> Result<(), R1CSError> {
-        let Env { cs, mem, bus, .. } = self;
-        cs.finish_reciprocal(mem)?;
-        cs.finish_reciprocal(bus)
+    /// Memory argument (`Init + Writes = Reads + Final` as multisets): a read, or a final
+    /// value, `+1 / (X + (key, value, t))`.
+    pub fn mem_read(&mut self, tuple: &[Lc]) -> Result<(), R1CSError> {
+        self.mem.add(self.cs, tuple)
+    }
+
+    /// Memory argument: a write, or a private initial value, `-1 / (X + (key, value, t))`.
+    pub fn mem_write(&mut self, tuple: &[Lc]) -> Result<(), R1CSError> {
+        self.mem.sub(self.cs, tuple)
+    }
+
+    /// Memory argument: a public initial value `(key, value, 0)`, `-1 / (X + row)`.
+    pub fn mem_init(&mut self, row: &[u64]) -> Result<(), R1CSError> {
+        self.mem.add_public(self.cs, (-Scalar::ONE).into(), row)
+    }
+
+    /// Bus: the CPU sends a tuple to an opcode chip.
+    pub fn bus_send(&mut self, tuple: &[Lc]) -> Result<(), R1CSError> {
+        self.bus.add(self.cs, tuple)
+    }
+
+    /// Bus: an opcode chip receives a tuple.
+    pub fn bus_receive(&mut self, tuple: &[Lc]) -> Result<(), R1CSError> {
+        self.bus.sub(self.cs, tuple)
     }
 
     /// The one-column table $\{0, \dots, 2^k - 1\}$, $1 \le k \le$ [`DIGIT_BITS`] (for tests).
@@ -118,11 +137,12 @@ impl<'a, CS: CircuitBuilder> Env<'a, CS> {
     }
 
     /// A free witness (BP: half a multiplier; BP++: no gate).
-    pub fn alloc(&mut self, v: Option<u64>) -> Result<Variable, R1CSError> {
+    pub fn witness(&mut self, v: Option<u64>) -> Result<Variable, R1CSError> {
         self.cs.witness(v.map(s))
     }
 
-    pub fn alloc_scalar(&mut self, v: Option<Scalar>) -> Result<Variable, R1CSError> {
+    /// A free witness that is any field element.
+    pub fn witness_scalar(&mut self, v: Option<Scalar>) -> Result<Variable, R1CSError> {
         self.cs.witness(v)
     }
 
@@ -177,8 +197,8 @@ impl<'a, CS: CircuitBuilder> Env<'a, CS> {
 
     /// $z = [x = 0]$ (two multipliers).
     pub fn is_zero(&mut self, x: Lc, v: Option<Scalar>) -> Result<Variable, R1CSError> {
-        let z = self.alloc_scalar(v.map(|v| s((v == Scalar::ZERO) as u64)))?;
-        let inv = self.alloc_scalar(v.map(|v| if v == Scalar::ZERO { Scalar::ZERO } else { v.invert() }))?;
+        let z = self.witness_scalar(v.map(|v| s((v == Scalar::ZERO) as u64)))?;
+        let inv = self.witness_scalar(v.map(|v| if v == Scalar::ZERO { Scalar::ZERO } else { v.invert() }))?;
         let p = self.mul(x.clone(), inv.into());
         self.cs.constrain(p + z - Scalar::ONE);
         let q = self.mul(x, z.into());
@@ -216,9 +236,9 @@ impl<'a, CS: CircuitBuilder> Env<'a, CS> {
         let (mut ea, mut eb, mut er) = (a, b, r);
         for i in 0..8 {
             let nib = |x: u32| ((x >> (4 * i)) & 0xf) as u64;
-            let na = self.alloc(w.map(|w| nib(w.0)))?;
-            let nb = self.alloc(w.map(|w| nib(w.1)))?;
-            let nr = self.alloc(w.map(|w| nib(w.2)))?;
+            let na = self.witness(w.map(|w| nib(w.0)))?;
+            let nb = self.witness(w.map(|w| nib(w.1)))?;
+            let nr = self.witness(w.map(|w| nib(w.2)))?;
             self.cs.lookup(self.bitop, &[lc(s(tag)), na.into(), nb.into(), nr.into()])?;
             let k = pow2(4 * i);
             ea = ea - na * k;
@@ -233,12 +253,12 @@ impl<'a, CS: CircuitBuilder> Env<'a, CS> {
 
     /// Shift amount $b \bmod 32$ for a 32-bit $b$: returns $p = 2^{b \bmod 32}$.
     pub fn shift_pow(&mut self, b: Lc, vb: Option<u32>) -> Result<Variable, R1CSError> {
-        let sh = self.alloc(vb.map(|b| (b & 31) as u64))?;
-        let p = self.alloc(vb.map(|b| 1u64 << (b & 31)))?;
+        let sh = self.witness(vb.map(|b| (b & 31) as u64))?;
+        let p = self.witness(vb.map(|b| 1u64 << (b & 31)))?;
         self.cs.lookup(self.pow, &[sh.into(), p.into()])?;
         let hi = b - sh;
         // hi = 32 * h with h < 2^27
-        let h = self.alloc(vb.map(|b| (b >> 5) as u64))?;
+        let h = self.witness(vb.map(|b| (b >> 5) as u64))?;
         self.cs.constrain(hi - h * s(32));
         self.range_bits(h.into(), vb.map(|b| (b >> 5) as u64), 27)?;
         Ok(p)

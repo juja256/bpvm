@@ -55,11 +55,7 @@ fn report(stage: &str, n: Option<usize>) {
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: mem_profile <elf> [bp|bppp]");
-    let backend = match std::env::args().nth(2).as_deref() {
-        None | Some("bp") => bpvm_zk::Backend::Bp,
-        Some("bppp") => bpvm_zk::Backend::Bppp,
-        Some(b) => panic!("unknown backend {b}"),
-    };
+    let backend: bpvm_zk::Backend = std::env::args().nth(2).map_or(bpvm_zk::Backend::Bp, |b| b.parse().expect("bp or bppp"));
     let img = Image::from_elf(&std::fs::read(&path).unwrap()).unwrap();
     let trace = Machine::from_image(&img).run(1 << 22).unwrap();
     report("executed", None);
@@ -67,10 +63,7 @@ fn main() {
     drop(trace);
     report("witness", None);
     let cost = bpvm_zk::cost(&st).unwrap();
-    let n = match backend {
-        bpvm_zk::Backend::Bp => cost.bp_phase1 + cost.bp_phase2,
-        _ => cost.bppp_gates,
-    };
+    let n = cost.gates(backend);
     PEAK.store(LIVE.load(Relaxed), Relaxed);
     report("sized", Some(n));
     let (proof, stats) = bpvm_zk::vm::prove_staged(&st, &wit, backend, |s| report(s, Some(n))).unwrap();

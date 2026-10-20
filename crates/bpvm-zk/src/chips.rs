@@ -53,15 +53,15 @@ struct Vars {
 
 pub fn chip<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, w: Option<&Row>) -> Result<(), R1CSError> {
     let x = Vars {
-        clk: env.alloc(w.map(|r| r.clk))?,
-        pc: env.alloc(w.map(|r| r.pc as u64))?,
-        next_pc: env.alloc(w.map(|r| r.next_pc as u64))?,
-        imm: env.alloc(w.map(|r| r.imm as u64))?,
-        v1: env.alloc(w.map(|r| r.v1 as u64))?,
-        v2: env.alloc(w.map(|r| r.v2 as u64))?,
-        vd: env.alloc(w.map(|r| r.vd as u64))?,
+        clk: env.witness(w.map(|r| r.clk))?,
+        pc: env.witness(w.map(|r| r.pc as u64))?,
+        next_pc: env.witness(w.map(|r| r.next_pc as u64))?,
+        imm: env.witness(w.map(|r| r.imm as u64))?,
+        v1: env.witness(w.map(|r| r.v1 as u64))?,
+        v2: env.witness(w.map(|r| r.v2 as u64))?,
+        vd: env.witness(w.map(|r| r.vd as u64))?,
     };
-    env.bus.sub(vec![
+    env.bus_receive(&[
         lc(op.id()),
         x.clk.into(),
         x.pc.into(),
@@ -70,7 +70,7 @@ pub fn chip<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, w: Option<&Row>) 
         x.v1.into(),
         x.v2.into(),
         x.vd.into(),
-    ]);
+    ])?;
 
     use Op::*;
     let imm_form = matches!(op, ADDI | SLTI | SLTIU | XORI | ORI | ANDI | SLLI | SRLI | SRAI);
@@ -173,7 +173,7 @@ pub fn chip<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, w: Option<&Row>) 
             let p = env.shift_pow(bl, wb)?;
             let prod = env.mul(a, p.into());
             let hi = wab.map(|(a, b)| (((a as u64) << (b & 31)) >> 32) as u32);
-            let h = env.alloc(hi.map(|v| v as u64))?;
+            let h = env.witness(hi.map(|v| v as u64))?;
             env.constrain(prod - vd - h * t32);
             env.range32(h.into(), hi)?;
         }
@@ -181,7 +181,7 @@ pub fn chip<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, w: Option<&Row>) 
             let p = env.shift_pow(bl.clone(), wb)?;
             let sh = wb.map(|b| b & 31);
             let rem_v = wab.map(|(a, b)| a & ((1u64 << (b & 31)) - 1) as u32);
-            let rem = env.alloc(rem_v.map(|v| v as u64))?;
+            let rem = env.witness(rem_v.map(|v| v as u64))?;
             env.range32(rem.into(), rem_v)?;
             // rem < p
             env.range32(p - rem - Scalar::ONE, rem_v.zip(sh).map(|(r, s)| ((1u64 << s) - 1 - r as u64) as u32))?;
@@ -190,11 +190,11 @@ pub fn chip<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, w: Option<&Row>) 
                 env.constrain(a - qp - rem);
             } else {
                 let sa = env.msb32(a.clone(), wa)?;
-                let u = env.alloc(wab.map(|(a, b)| (a >> (b & 31)) as u64))?;
+                let u = env.witness(wab.map(|(a, b)| (a >> (b & 31)) as u64))?;
                 let up = env.mul(u.into(), p.into());
                 env.constrain(a - up - rem);
                 // q = 2^(32 - sh), the sign-extension mask is 2^32 - q
-                let q = env.alloc(sh.map(|s| 1u64 << (32 - s)))?;
+                let q = env.witness(sh.map(|s| 1u64 << (32 - s)))?;
                 let qp = env.mul(q.into(), p.into());
                 env.constrain(qp - t32);
                 let m = env.mul(sa.into(), lc(t32) - q);
@@ -207,12 +207,12 @@ pub fn chip<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, w: Option<&Row>) 
             let full = wab.map(|(a, b)| a as u64 * b as u64);
             if op == MUL {
                 let hi = full.map(|p| (p >> 32) as u32);
-                let h = env.alloc(hi.map(|v| v as u64))?;
+                let h = env.witness(hi.map(|v| v as u64))?;
                 env.constrain(prod - vd - h * t32);
                 env.range32(h.into(), hi)?;
             } else {
                 let lo = full.map(|p| p as u32);
-                let l = env.alloc(lo.map(|v| v as u64))?;
+                let l = env.witness(lo.map(|v| v as u64))?;
                 env.constrain(prod - l - vd * t32);
                 env.range32(l.into(), lo)?;
             }
@@ -229,7 +229,7 @@ pub fn chip<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, w: Option<&Row>) 
             let prod = env.mul(sa_lc, b_lc);
             let k = env.boolean(pv.map(|p| p < 0))?;
             let lo = pv.map(|p| p as u64 as u32);
-            let l = env.alloc(lo.map(|v| v as u64))?;
+            let l = env.witness(lo.map(|v| v as u64))?;
             // P + 2^64 k = lo + 2^32 vd
             env.constrain(prod + k * pow2(64) - l - vd * t32);
             env.range32(l.into(), lo)?;
@@ -237,11 +237,11 @@ pub fn chip<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, w: Option<&Row>) 
         DIVU | REMU => {
             let qr = wab.map(|(a, b)| if b == 0 { (u32::MAX, a) } else { (a / b, a % b) });
             let (q, r): (Lc, Lc) = if op == DIVU {
-                let r = env.alloc(qr.map(|v| v.1 as u64))?;
+                let r = env.witness(qr.map(|v| v.1 as u64))?;
                 env.range32(r.into(), qr.map(|v| v.1))?;
                 (vd.clone(), r.into())
             } else {
-                let q = env.alloc(qr.map(|v| v.0 as u64))?;
+                let q = env.witness(qr.map(|v| v.0 as u64))?;
                 env.range32(q.into(), qr.map(|v| v.0))?;
                 (q.into(), vd.clone())
             };
@@ -260,10 +260,10 @@ pub fn chip<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, w: Option<&Row>) 
                 (bpvm_emu::cpu::alu(bpvm_emu::AluOp::Div, a, b), bpvm_emu::cpu::alu(bpvm_emu::AluOp::Rem, a, b))
             });
             let (q, r): (Lc, Lc) = if op == DIV {
-                let r = env.alloc(qr.map(|v| v.1 as u64))?;
+                let r = env.witness(qr.map(|v| v.1 as u64))?;
                 (vd.clone(), r.into())
             } else {
-                let q = env.alloc(qr.map(|v| v.0 as u64))?;
+                let q = env.witness(qr.map(|v| v.0 as u64))?;
                 (q.into(), vd.clone())
             };
             let sa = env.msb32(a.clone(), wa)?;
@@ -320,7 +320,7 @@ fn mem_op<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, x: &Vars, w: Option
     let ea = w.map(|r| r.v1 as u64 + r.imm as u64);
     let addr = ea.map(|e| e as u32);
     let c = env.boolean(ea.map(|e| e >> 32 == 1))?;
-    let widx = env.alloc(addr.map(|a| (a >> 2) as u64))?;
+    let widx = env.witness(addr.map(|a| (a >> 2) as u64))?;
     env.range_bits(widx.into(), addr.map(|a| (a >> 2) as u64), 30)?;
     let addr_lc = x.v1 + x.imm - c * t32;
 
@@ -348,14 +348,14 @@ fn mem_op<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, x: &Vars, w: Option
     let m = w.and_then(|r| r.mem.as_ref());
     let key = lc(widx) + pow2(32);
     let t = x.clk * s(4) + s(4);
-    let tp = env.alloc(m.map(|m| m.t_prev))?;
+    let tp = env.witness(m.map(|m| m.t_prev))?;
     env.range_bits(t.clone() - tp - Scalar::ONE, w.zip(m).map(|(r, m)| 4 * r.clk + 3 - m.t_prev), TS_BITS)?;
     let wb_v = m.map(|m| m.before);
 
     let (before, after): (Lc, Lc) = match op {
         LW => (x.vd.into(), x.vd.into()),
         LB | LBU | LH | LHU => {
-            let wv = env.alloc(wb_v.map(|v| v as u64))?;
+            let wv = env.witness(wb_v.map(|v| v as u64))?;
             let bytes = env.range32(wv.into(), wb_v)?;
             let (val, bits): (Lc, u32) = if matches!(op, LB | LBU) {
                 let mut byte = lc(Scalar::ZERO);
@@ -380,18 +380,18 @@ fn mem_op<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, x: &Vars, w: Option
             (wv.into(), wv.into())
         }
         SW => {
-            let wv = env.alloc(wb_v.map(|v| v as u64))?;
+            let wv = env.witness(wb_v.map(|v| v as u64))?;
             (wv.into(), x.v2.into())
         }
         _ => {
             // SB / SH: replace a byte / half of the old word with the low bits of v2.
             let bits = if op == SB { 8 } else { 16 };
-            let wv = env.alloc(wb_v.map(|v| v as u64))?;
+            let wv = env.witness(wb_v.map(|v| v as u64))?;
             let bytes = env.range32(wv.into(), wb_v)?;
             let v2 = w.map(|r| r.v2);
             let nv = v2.map(|v| (v & ((1u64 << bits) - 1) as u32) as u64);
-            let n = env.alloc(nv)?;
-            let rest = env.alloc(v2.map(|v| (v >> bits) as u64))?;
+            let n = env.witness(nv)?;
+            let rest = env.witness(v2.map(|v| (v >> bits) as u64))?;
             env.range_bits(n.into(), nv, bits)?;
             env.range_bits(rest.into(), v2.map(|v| (v >> bits) as u64), 32 - bits)?;
             env.constrain(x.v2 - n - rest * pow2(bits));
@@ -411,7 +411,7 @@ fn mem_op<CS: CircuitBuilder>(env: &mut Env<'_, CS>, op: Op, x: &Vars, w: Option
             (wv.into(), after)
         }
     };
-    env.mem.add(vec![key.clone(), before, tp.into()]);
-    env.mem.sub(vec![key, after, t]);
+    env.mem_read(&[key.clone(), before, tp.into()])?;
+    env.mem_write(&[key, after, t])?;
     Ok(())
 }

@@ -32,7 +32,7 @@ fn prove_and_verify(img: &Image, trace: &Trace) -> Result<(), String> {
     for backend in BACKENDS {
         let (proof, stats) = bpvm_zk::prove(&stmt, &wit, backend).map_err(|e| format!("{backend:?}: {e:?}"))?;
         assert_eq!(proof.backend(), backend);
-        println!("{backend:?}: {} steps, {} gates, {} linear, {} B, {:.2?}", stmt.steps, stats.multipliers, stats.linear, stats.proof_bytes, stats.time);
+        println!("{backend:?}: {} steps, {} gates, {} linear, {} B, {:.2?}", stmt.steps, stats.gates, stats.linear, stats.proof_bytes, stats.time);
         bpvm_zk::verify(&stmt, &proof).map_err(|e| format!("{backend:?}: {e:?}"))?;
     }
     Ok(())
