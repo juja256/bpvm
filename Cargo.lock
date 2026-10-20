@@ -47,6 +47,7 @@ dependencies = [
  "curve25519-dalek",
  "digest",
  "group",
+ "keccak",
  "merlin",
  "rand",
  "rand_core",

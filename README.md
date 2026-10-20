@@ -121,7 +121,7 @@ commitments).
 | | | BP++ | 7 262 452 + 3 529 272 | 1649 B | | 132 s / 15.6 s | 8.5–11.4 GB |
 
 BP++ proofs are 400 B smaller at every size, and BP++ proves with 40% fewer gates. It proves
-faster than BP everywhere: 10–30% single-threaded, 9–24% multi-threaded. It verifies 1.6–2.3x
+faster than BP everywhere: 10–35% single-threaded, 9–31% multi-threaded. It verifies 1.6–2.3x
 faster single-threaded. Multi-threaded, the two verifiers are about even: BP++ is faster on fib,
 sha256 and `ec_add`, and 8% slower on `ec_mini`. The remaining sequential part of the BP++
 verifier is the SHA3 digest of the circuit, which is bound into the transcript before any
