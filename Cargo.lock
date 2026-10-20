@@ -41,12 +41,13 @@ dependencies = [
 [[package]]
 name = "bulletproofs"
 version = "5.0.1"
-source = "git+https://github.com/juja256/bulletproofs?rev=f9f540ab29b54cf12bc5d6ac85e095602b4d63cf#f9f540ab29b54cf12bc5d6ac85e095602b4d63cf"
+source = "git+https://github.com/juja256/bulletproofs?rev=dc8d05704297bf74f6bae2bc61551c3e0e7e0e62#dc8d05704297bf74f6bae2bc61551c3e0e7e0e62"
 dependencies = [
  "byteorder",
  "clear_on_drop",
  "curve25519-dalek",
  "digest",
+ "ff",
  "group",
  "keccak",
  "merlin",
@@ -58,6 +59,7 @@ dependencies = [
  "sha3",
  "subtle",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]
