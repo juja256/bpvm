@@ -7,9 +7,9 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-# The bulletproofs fork with the BP++ backend and the circuit builder (juja256/bulletproofs main, 4074e6f: generic over the curve
+# The bulletproofs fork with the BP++ backend and the circuit builder (juja256/bulletproofs main, c6de57b: generic over the curve
 # and the Fiat–Shamir transcript; Simplicity verifiers behind `simplicity`).
-bulletproofs = { git = "https://github.com/juja256/bulletproofs", rev = "4074e6f8f564ac49b1a75dee39e3aaabaf604bf7", features = ["yoloproofs", "bppp", "sha256-transcript"] }
+bulletproofs = { git = "https://github.com/juja256/bulletproofs", rev = "c6de57bad88bd524943517d633162bf55a3c315d", features = ["yoloproofs", "bppp", "sha256-transcript"] }
 curve25519-dalek = { version = "4.1.3", features = ["digest", "group", "rand_core", "serde"] }
 merlin = "3"
 rand = "0.8"
