@@ -10,7 +10,7 @@ system. See [DESIGN.md](DESIGN.md).
 crates/bpvm-emu   RV32IM interpreter recording the execution trace, ELF loader
 crates/bpvm-zk    the circuit: gadgets (tables, lookups, buses), opcode chips, CPU + memory, prove/verify
 crates/bpvm-cli   `bpvm run|prove|verify <elf>`: execute, prove to a JSON proof file, verify
-guest/            C guests (fib, sha256, balance) and their runtime     -> guest/README.md
+guest/            C guests (fib, sha256, balance, mul) and their runtime -> guest/README.md
 guest-rs/         Rust guests (ec-add with k256, ec-mini) and runtime  -> guest-rs/README.md
 ```
 
@@ -63,7 +63,9 @@ bpvm [--no-prove] [--backend bp|bppp] [--transcript merlin|sha256] <elf> [-i inp
 Developer examples (`cargo run --release -p bpvm-zk --example <name>`): `op_costs`
 (BP multipliers and BP++ gates per opcode), `linear_cost` (cost of linear constraints),
 `mem_profile <elf> [bp|bppp]` (heap per prover stage), `r1cs_scaling` (prover/verifier time
-vs circuit size).
+vs circuit size), `simplicity [<elf>] [name=v1,v2 ...]` (feature `simplicity`: the Simplicity
+verifier of a guest's proof over secp256k1, run as a Liquid node would; e.g.
+`guest/mul/mul.elf a=100003 b=70001`).
 
 ## Inputs and outputs, Pedersen commitments
 
@@ -94,6 +96,7 @@ text string.
 ```sh
 bpvm prove  guest/balance/balance.elf -i guest/balance/balance.json   # -> balance.proof.json, balance.secrets.json
 bpvm verify guest/balance/balance.elf guest/balance/balance.proof.json
+bpvm guest/mul/mul.elf -i guest/mul/mul.json                         # c = a·b, a and b private, c public
 ```
 
 - `*.proof.json` is public: step count, opcode counts, exit code, public inputs/outputs,
@@ -125,6 +128,8 @@ commitments).
 | | | BP++ | 2 450 + 1 683 | 945 B | 0.27 s / 16 ms | 0.22 s / 16 ms | |
 | [balance](guest/balance/balance.c) | 72 | BP | 4 769 ($2^{13}$) | 1345 B | 0.49 s / 41 ms | | |
 | | | BP++ | 2 368 + 2 579 | 977 B | 0.27 s / 19 ms | | |
+| [mul](guest/mul/mul.c) | 18 | BP | 1 572 ($2^{11}$) | 1217 B | 0.17 s / 12 ms | | |
+| | | BP++ | 776 + 852 | 849 B | 0.13 s / 8 ms | | |
 | [SHA-256](guest/sha256/sha256.c) | 5 904 | BP | 314 536 ($2^{19}$) | 1729 B | 30.7 s / 2.49 s | 4.62 s / 0.43 s | 0.50 GB |
 | | | BP++ | 178 651 + 105 359 | 1329 B | 15.6 s / 1.05 s | 2.90 s / 0.37 s | 0.76 GB |
 | [ec-mini](guest-rs/ec-mini/src) | 20 713 | BP | 977 716 ($2^{20}$) | 1793 B | 75.8 s / 5.24 s | 11.6 s / 1.06 s | 1.13 GB |
@@ -135,6 +140,8 @@ commitments).
 The guests (the ELF next to each source):
 - **Fibonacci** (C): the 10th Fibonacci number, 55 (the exit code).
 - **balance** (C): 4 committed inputs, 1 committed output.
+- **mul** (C): knowledge of factors, $c = a \cdot b$ with $a, b$ committed 32-bit inputs and
+  $c$ a public 64-bit output (rows measured 2026-10-21).
 - **SHA-256** (C): SHA-256("abc"), one block.
 - **ec-mini** (Rust, no dependencies): secp256k1 $G + 2G$ (Jacobian addition, checked against
   $3G$).
