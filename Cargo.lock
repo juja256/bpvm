@@ -142,7 +142,6 @@ dependencies = [
  "bpvm-emu",
  "bpvm-zk",
  "bulletproofs",
- "curve25519-dalek",
  "rand",
  "serde_json",
 ]

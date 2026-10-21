@@ -1,5 +1,5 @@
-//! The command line: prove and verify with both backends, and proof files the verifier must
-//! refuse before (or instead of) running the verifier.
+//! The command line: prove and verify with both backends and both curves, and proof files the
+//! verifier must refuse before (or instead of) running the verifier.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -85,4 +85,68 @@ fn prove_and_verify_under_sha256() {
     }
     let (ok, out) = bpvm(&["--transcript", "sha256", &elf]);
     assert!(ok && out.contains("sanity"), "{out}");
+}
+
+fn mul() -> (String, String) {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../guest/mul/");
+    (format!("{dir}mul.elf"), format!("{dir}mul.json"))
+}
+
+/// Prove `guest/mul` to files under `name`, with `extra` flags; the proof file.
+fn prove_mul(name: &str, extra: &[&str]) -> (PathBuf, serde_json::Value) {
+    let (elf, input) = mul();
+    let (proof, sec) = (tmp(&format!("{name}.proof.json")), tmp(&format!("{name}.secrets.json")));
+    let mut args = vec!["prove", &elf, "-i", &input, "-o", proof.to_str().unwrap(), "-s", sec.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    let (ok, out) = bpvm(&args);
+    assert!(ok, "{out}");
+    let v = serde_json::from_slice(&std::fs::read(&proof).unwrap()).unwrap();
+    (proof, v)
+}
+
+/// `--curve secp256k1`: the proof file records the curve (33-byte SEC1 commitments), and
+/// `verify` follows it.
+#[test]
+fn secp256k1_proof_file_round_trip() {
+    let (elf, _) = mul();
+    let (proof, v) = prove_mul("mul-secp", &["--curve", "secp256k1", "--backend", "bppp", "--transcript", "sha256"]);
+    assert_eq!(v["curve"], "secp256k1");
+    assert_eq!(v["private_inputs"]["a"][0].as_str().unwrap().len(), 66);
+    let (ok, out) = bpvm(&["verify", &elf, proof.to_str().unwrap()]);
+    assert!(ok && out.contains("secp256k1") && out.contains("c = 7000310003"), "{out}");
+}
+
+/// ristretto255 is the default, and a proof file that names no curve is read as ristretto255.
+#[test]
+fn ristretto_is_the_default_and_a_file_without_curve_verifies() {
+    let (elf, _) = mul();
+    let (proof, v) = prove_mul("mul-ristretto", &[]);
+    assert_eq!(v["curve"], "ristretto255");
+    let (ok, out) = verify_edited(&elf, &proof, "mul-ristretto-unnamed.json", |v| drop(v.as_object_mut().unwrap().remove("curve")), &[]);
+    assert!(ok, "{out}");
+}
+
+/// A secp256k1 proof file relabelled as ristretto255 (or an unknown curve) is refused.
+#[test]
+fn a_proof_under_another_curve_is_rejected() {
+    let (elf, _) = mul();
+    let (proof, _) = prove_mul("mul-swap", &["--curve", "secp256k1"]);
+    let (ok, out) = verify_edited(&elf, &proof, "mul-swap-ristretto.json", |v| v["curve"] = "ristretto255".into(), &[]);
+    assert!(!ok, "{out}");
+    let (ok, out) = verify_edited(&elf, &proof, "mul-swap-p256.json", |v| v["curve"] = "p256".into(), &[]);
+    assert!(!ok && out.contains("p256"), "{out}");
+}
+
+#[test]
+fn unknown_curve_is_an_error() {
+    let (elf, input) = mul();
+    let (ok, out) = bpvm(&["run", &elf, "-i", &input, "--curve", "p256"]);
+    assert!(!ok && out.contains("p256"), "{out}");
+}
+
+#[test]
+fn demo_runs_on_secp256k1() {
+    let (elf, input) = mul();
+    let (ok, out) = bpvm(&["--curve", "secp256k1", &elf, "-i", &input]);
+    assert!(ok && out.contains("on secp256k1") && out.contains("sanity"), "{out}");
 }

@@ -13,11 +13,12 @@ path = "src/main.rs"
 bpvm-emu = { path = "../bpvm-emu" }
 bpvm-zk = { path = "../bpvm-zk", default-features = false }
 bulletproofs.workspace = true
-curve25519-dalek.workspace = true
 rand.workspace = true
 serde_json = "1"
 
 [features]
-default = ["bppp-vartime"]
+default = ["bppp-vartime", "secp256k1"]
+# `--curve secp256k1` (Liquid's curve) next to the default ristretto255.
+secp256k1 = ["bpvm-zk/secp256k1"]
 parallel = ["bpvm-zk/parallel"]
 bppp-vartime = ["bpvm-zk/bppp-vartime"]

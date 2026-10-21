@@ -3,11 +3,16 @@
 //! ```text
 //! bpvm run    <elf> [-i input.json]                                   execute only
 //! bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp]
-//!             [--transcript merlin|sha256]                            execute and prove
+//!             [--transcript merlin|sha256] [--curve ristretto255|secp256k1]   execute and prove
 //! bpvm verify <elf> <proof.json> [--backend bp|bppp]                verify
-//! bpvm [--no-prove] [--backend bp|bppp] [--transcript merlin|sha256] <elf> [-i input.json]
+//! bpvm [--no-prove] [--backend bp|bppp] [--transcript merlin|sha256] [--curve ..] <elf> [-i input.json]
 //!                                               demo: prove, verify, reject a forged exit code
 //! ```
+//!
+//! `--curve` picks the group of the proof and the Pedersen commitments: `ristretto255` (the
+//! default) or `secp256k1` (feature `secp256k1`, on by default; Liquid's curve). The proof file
+//! records it, and `verify` uses the one recorded (`ristretto255` if the file names none).
+//! Scalars (blindings) and commitments are hex in the curve's own encoding.
 //!
 //! `--transcript` picks the Fiat–Shamir transcript: `merlin` (the default) or `sha256`
 //! (SHA-256 only, for verifiers without Keccak such as Simplicity on Liquid). The proof file
@@ -31,9 +36,10 @@ use std::process::ExitCode;
 use bpvm_emu::{Image, IoKind, IoType, IoVar, Machine};
 use bpvm_zk::isa::Op;
 use bpvm_zk::{Backend, Committed, IoSpec, Statement, TranscriptKind};
+use bulletproofs::curve::ff::Field as _;
+use bulletproofs::curve::{Curve, Field, PointEncoding};
 use bulletproofs::r1cs::R1CSProof;
-use curve25519_dalek::ristretto::CompressedRistretto;
-use curve25519_dalek::scalar::Scalar;
+use bulletproofs::Ristretto;
 use serde_json::{json, Map, Value};
 
 const MAX_STEPS: u64 = 1 << 20;
@@ -41,9 +47,9 @@ const MAX_STEPS: u64 = 1 << 20;
 const PROOF_FILE_VERSION: u64 = 2;
 const USAGE: &str = "usage:
   bpvm run    <elf> [-i input.json]
-  bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp] [--transcript merlin|sha256]
+  bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp] [--transcript merlin|sha256] [--curve ristretto255|secp256k1]
   bpvm verify <elf> <proof.json> [--backend bp|bppp]
-  bpvm [--no-prove] [--backend bp|bppp] [--transcript merlin|sha256] <elf> [-i input.json]";
+  bpvm [--no-prove] [--backend bp|bppp] [--transcript merlin|sha256] [--curve ristretto255|secp256k1] <elf> [-i input.json]";
 
 struct Args {
     positional: Vec<String>,
@@ -57,7 +63,7 @@ fn parse_args() -> Result<Args, String> {
     while let Some(x) = it.next() {
         match x.as_str() {
             "--no-prove" => a.no_prove = true,
-            "-i" | "-o" | "-s" | "--backend" | "--transcript" => {
+            "-i" | "-o" | "-s" | "--backend" | "--transcript" | "--curve" => {
                 let v = it.next().ok_or(format!("{x} needs a value"))?;
                 a.flags.insert(x, v);
             }
@@ -76,21 +82,66 @@ fn transcript_of(a: &Args) -> Result<TranscriptKind, String> {
     a.flags.get("--transcript").map_or(Ok(TranscriptKind::Merlin), |t| t.parse().map_err(|e| format!("{t:?}: {e}")))
 }
 
+/// The group of the proof and the commitments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CurveKind {
+    Ristretto255,
+    Secp256k1,
+}
+
+impl CurveKind {
+    fn name(self) -> &'static str {
+        match self {
+            CurveKind::Ristretto255 => "ristretto255",
+            CurveKind::Secp256k1 => "secp256k1",
+        }
+    }
+}
+
+impl std::str::FromStr for CurveKind {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "ristretto255" | "ristretto" => Ok(CurveKind::Ristretto255),
+            "secp256k1" => Ok(CurveKind::Secp256k1),
+            _ => Err(format!("unknown curve {s:?} (ristretto255 or secp256k1)")),
+        }
+    }
+}
+
+fn curve_of(a: &Args) -> Result<CurveKind, String> {
+    a.flags.get("--curve").map_or(Ok(CurveKind::Ristretto255), |c| c.parse())
+}
+
+/// Call `$f::<C>($args)` with the curve `$curve`.
+macro_rules! on_curve {
+    ($curve:expr, $f:ident($($args:expr),*)) => {
+        match $curve {
+            CurveKind::Ristretto255 => $f::<Ristretto>($curve, $($args),*),
+            #[cfg(feature = "secp256k1")]
+            CurveKind::Secp256k1 => $f::<bulletproofs::curve::Secp256k1>($curve, $($args),*),
+            #[cfg(not(feature = "secp256k1"))]
+            CurveKind::Secp256k1 => Err("this bpvm was built without the secp256k1 feature".to_string()),
+        }
+    };
+}
+
 fn main() -> ExitCode {
     let res = parse_args().and_then(|a| {
         let p = &a.positional;
         let backend = backend_of(&a)?;
         let kind = transcript_of(&a)?;
+        let curve = curve_of(&a)?;
         match p.first().map(String::as_str) {
-            Some("run") if p.len() == 2 => run(&p[1], a.flags.get("-i"), Mode::Run, backend, kind),
+            Some("run") if p.len() == 2 => on_curve!(curve, run(&p[1], a.flags.get("-i"), Mode::Run, backend, kind)),
             Some("prove") if p.len() == 2 => {
                 let stem = p[1].strip_suffix(".elf").unwrap_or(&p[1]).to_string();
                 let out = a.flags.get("-o").cloned().unwrap_or(format!("{stem}.proof.json"));
                 let sec = a.flags.get("-s").cloned().unwrap_or(format!("{stem}.secrets.json"));
-                run(&p[1], a.flags.get("-i"), Mode::Prove { out, sec }, backend, kind)
+                on_curve!(curve, run(&p[1], a.flags.get("-i"), Mode::Prove { out, sec }, backend, kind))
             }
             Some("verify") if p.len() == 3 => verify(&p[1], &p[2], a.flags.contains_key("--backend").then_some(backend)),
-            Some(_) if p.len() == 1 => run(&p[0], a.flags.get("-i"), if a.no_prove { Mode::Run } else { Mode::Demo }, backend, kind),
+            Some(_) if p.len() == 1 => on_curve!(curve, run(&p[0], a.flags.get("-i"), if a.no_prove { Mode::Run } else { Mode::Demo }, backend, kind)),
             _ => Err(USAGE.into()),
         }
     });
@@ -127,8 +178,8 @@ fn unhex32(s: &str) -> Result<[u8; 32], String> {
     unhex(s)?.try_into().map_err(|_| format!("expected 32 bytes of hex: {s}"))
 }
 
-fn scalar(s: &str) -> Result<Scalar, String> {
-    Option::from(Scalar::from_canonical_bytes(unhex32(s)?)).ok_or(format!("non-canonical scalar {s}"))
+fn scalar<F: Field>(s: &str) -> Result<F, String> {
+    F::from_bytes32(&unhex32(s)?).ok_or(format!("non-canonical scalar {s}"))
 }
 
 fn number(v: &Value, ty: IoType) -> Result<u64, String> {
@@ -149,8 +200,8 @@ fn number(v: &Value, ty: IoType) -> Result<u64, String> {
 }
 
 /// Element values (and optional blindings) of one input variable.
-fn parse_input(var: &IoVar, v: &Value) -> Result<Vec<(u64, Option<Scalar>)>, String> {
-    let elem = |e: &Value| -> Result<(u64, Option<Scalar>), String> {
+fn parse_input<F: Field>(var: &IoVar, v: &Value) -> Result<Vec<(u64, Option<F>)>, String> {
+    let elem = |e: &Value| -> Result<(u64, Option<F>), String> {
         match e {
             Value::Object(o) if var.kind == IoKind::PrivateInput => {
                 let value = number(o.get("value").ok_or("missing \"value\"")?, var.ty)?;
@@ -229,7 +280,7 @@ fn group(names: &[String], items: impl IntoIterator<Item = Value>) -> Value {
 
 // ---------- run / prove ----------
 
-fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend, kind: TranscriptKind) -> Result<(), String> {
+fn run<C: Curve>(curve: CurveKind, path: &str, input: Option<&String>, mode: Mode, backend: Backend, kind: TranscriptKind) -> Result<(), String> {
     let mut img = load(path)?;
     println!("loaded {path}: entry {:#x}, {} code words, {} RAM words", img.entry, img.code.len(), img.data.len());
 
@@ -245,18 +296,18 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend, kind: T
         }
     }
     let mut public_in = Map::new();
-    let mut spec = IoSpec::default();
+    let mut spec = IoSpec::<C::Scalar>::default();
     let mut rng = rand::rngs::OsRng;
     for var in img.io.clone().iter().filter(|v| v.kind.is_input()) {
         let v = input.get(&var.name).ok_or(format!("missing input {:?}", var.name))?;
-        let vals = parse_input(var, v)?;
+        let vals = parse_input::<C::Scalar>(var, v)?;
         let plain: Vec<u64> = vals.iter().map(|x| x.0).collect();
         patch(&mut img, &var.to_words(&plain))?;
         if var.kind == IoKind::PublicInput {
             public_in.insert(var.name.clone(), json_values(var, &plain));
         } else {
             for (i, (_, r)) in vals.iter().enumerate() {
-                spec.private_in.push((var.words(i as u32), r.unwrap_or_else(|| Scalar::random(&mut rng))));
+                spec.private_in.push((var.words(i as u32), r.unwrap_or_else(|| C::Scalar::random(&mut rng))));
             }
         }
     }
@@ -265,7 +316,7 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend, kind: T
             return Err(format!("{}: private uint8_t outputs are not supported", var.name));
         }
         for i in 0..var.count {
-            spec.private_out.push((var.words(i), Scalar::random(&mut rng)));
+            spec.private_out.push((var.words(i), C::Scalar::random(&mut rng)));
         }
     }
     for var in vars(&img, IoKind::PublicOutput) {
@@ -275,7 +326,7 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend, kind: T
     let trace = Machine::from_image(&img).run(MAX_STEPS).map_err(|t| format!("execution trapped: {t:?}"))?;
     println!("executed {} steps, exit code {}", trace.steps.len(), trace.exit_code);
 
-    let (stmt, wit) = bpvm_zk::witness_with_io(&img, &trace, &spec)?;
+    let (stmt, wit) = bpvm_zk::witness_with_io_for::<C>(&img, &trace, &spec)?;
     let mix: Vec<String> = stmt.op_counts.iter().map(|(op, n)| format!("{op:?}×{n}")).collect();
     println!("instruction mix: {}", mix.join(" "));
 
@@ -300,8 +351,8 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend, kind: T
     };
     let (proof, stats) = proved;
     match backend {
-        Backend::Bp => println!("proved:   bp ({}), {} multipliers (padded to {}), proof {} bytes, {:.2?}", kind.name(), stats.gates, stats.gens_capacity, stats.proof_bytes, stats.time),
-        _ => println!("proved:   bppp ({}), {} gates, {} linear slots, proof {} bytes, {:.2?}", kind.name(), stats.gates, stats.linear, stats.proof_bytes, stats.time),
+        Backend::Bp => println!("proved:   bp ({}) on {}, {} multipliers (padded to {}), proof {} bytes, {:.2?}", kind.name(), curve.name(), stats.gates, stats.gens_capacity, stats.proof_bytes, stats.time),
+        _ => println!("proved:   bppp ({}) on {}, {} gates, {} linear slots, proof {} bytes, {:.2?}", kind.name(), curve.name(), stats.gates, stats.linear, stats.proof_bytes, stats.time),
     }
 
     match mode {
@@ -317,15 +368,16 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend, kind: T
             }
         }
         Mode::Prove { out, sec } => {
-            let commitment = |c: &Committed| json!(hex(c.commitment.as_bytes()));
-            let opening = |(c, (v, r)): (&Committed, &(u64, Scalar))| {
-                json!({"value": v, "blinding": hex(r.as_bytes()), "commitment": hex(c.commitment.as_bytes())})
+            let commitment = |c: &Committed<C>| json!(hex(c.commitment.as_bytes()));
+            let opening = |(c, (v, r)): (&Committed<C>, &(u64, C::Scalar))| {
+                json!({"value": v, "blinding": hex(&r.to_bytes32()), "commitment": hex(c.commitment.as_bytes())})
             };
             let op_counts: Map<String, Value> = stmt.op_counts.iter().map(|(op, n)| (format!("{op:?}"), json!(n))).collect();
             let proof_file = json!({
                 "bpvm": PROOF_FILE_VERSION,
                 "backend": backend.name(),
                 "transcript": kind.name(),
+                "curve": curve.name(),
                 "steps": stmt.steps,
                 "exit_code": stmt.exit_code,
                 "op_counts": op_counts,
@@ -349,10 +401,19 @@ fn run(path: &str, input: Option<&String>, mode: Mode, backend: Backend, kind: T
 
 // ---------- verify ----------
 
-/// `require`: the backend the proof must use (`--backend`); any if `None`.
+/// `require`: the backend the proof must use (`--backend`); any if `None`. The curve is the
+/// one the proof file records.
 fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), String> {
-    let mut img = load(path)?;
     let f = read_json(proof_path)?;
+    let curve: CurveKind = match f.get("curve") {
+        None => CurveKind::Ristretto255,
+        Some(c) => c.as_str().ok_or(format!("{proof_path}: \"curve\" must be a string"))?.parse().map_err(|e| format!("{proof_path}: {e}"))?,
+    };
+    on_curve!(curve, verify_on(path, proof_path, &f, require))
+}
+
+fn verify_on<C: Curve>(curve: CurveKind, path: &str, proof_path: &str, f: &Value, require: Option<Backend>) -> Result<(), String> {
+    let mut img = load(path)?;
     let get = |k: &str| f.get(k).ok_or(format!("{proof_path}: missing {k:?}"));
     let obj = |k: &str| get(k).and_then(|v| v.as_object().cloned().ok_or(format!("{proof_path}: {k:?} must be an object")));
     let num = |k: &str| get(k).and_then(|v| v.as_u64().ok_or(format!("{proof_path}: {k:?} must be a number")));
@@ -361,7 +422,7 @@ fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), 
     if version != PROOF_FILE_VERSION {
         return Err(format!("{proof_path}: proof file version {version}, this bpvm reads version {PROOF_FILE_VERSION}"));
     }
-    let proof = R1CSProof::from_bytes(&unhex(get("proof")?.as_str().ok_or("proof must be a hex string")?)?)
+    let proof = R1CSProof::<C>::from_bytes(&unhex(get("proof")?.as_str().ok_or("proof must be a hex string")?)?)
         .map_err(|e| format!("bad proof: {e:?}"))?;
     let named = get("backend")?.as_str().ok_or(format!("{proof_path}: \"backend\" must be a string"))?;
     if named != proof.backend().name() {
@@ -386,11 +447,11 @@ fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), 
     let public_in = obj("public_inputs")?;
     for var in vars(&img, IoKind::PublicInput).cloned().collect::<Vec<_>>() {
         let v = public_in.get(&var.name).ok_or(format!("missing public input {:?}", var.name))?;
-        let vals: Vec<u64> = parse_input(&var, v)?.into_iter().map(|x| x.0).collect();
+        let vals: Vec<u64> = parse_input::<C::Scalar>(&var, v)?.into_iter().map(|x| x.0).collect();
         patch(&mut img, &var.to_words(&vals))?;
     }
 
-    let commitments = |key: &str, kind: IoKind| -> Result<Vec<Committed>, String> {
+    let commitments = |key: &str, kind: IoKind| -> Result<Vec<Committed<C>>, String> {
         let m = obj(key)?;
         let mut out = Vec::new();
         for var in vars(&img, kind) {
@@ -400,7 +461,8 @@ fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), 
             }
             for (i, c) in list.iter().enumerate() {
                 let c = c.as_str().ok_or("commitment must be a hex string")?;
-                out.push(Committed { words: var.words(i as u32), commitment: CompressedRistretto(unhex32(c)?) });
+                let commitment = C::Compressed::from_slice(&unhex(c)?).ok_or(format!("{}: not a {} point encoding: {c}", var.name, curve.name()))?;
+                out.push(Committed { words: var.words(i as u32), commitment });
             }
         }
         Ok(out)
@@ -413,7 +475,7 @@ fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), 
     for var in vars(&img, IoKind::PublicOutput) {
         let v = public_out_json.get(&var.name).ok_or(format!("missing public output {:?}", var.name))?;
         let as_input = IoVar { kind: IoKind::PublicInput, ..var.clone() };
-        let vals: Vec<u64> = parse_input(&as_input, v)?.into_iter().map(|x| x.0).collect();
+        let vals: Vec<u64> = parse_input::<C::Scalar>(&as_input, v)?.into_iter().map(|x| x.0).collect();
         public_out.extend(var.to_words(&vals));
     }
 
@@ -430,7 +492,7 @@ fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), 
     let stmt = Statement::new(&img, steps, op_counts, exit_code, private_in, private_out, public_out);
     let t = bpvm_zk::verify_with(&stmt, &proof, kind).map_err(|e| format!("verifier rejected: {e:?}"))?;
 
-    println!("verified ({t:.2?}, {}, {}): {path} halts with exit code {} after {} steps", kind.name(), proof.backend(), stmt.exit_code, stmt.steps);
+    println!("verified ({t:.2?}, {}, {}, {}): {path} halts with exit code {} after {} steps", kind.name(), curve.name(), proof.backend(), stmt.exit_code, stmt.steps);
     for (k, v) in &public_in {
         println!("  public input   {k} = {v}");
     }

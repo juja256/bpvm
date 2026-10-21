@@ -49,14 +49,24 @@ The target is a Simplicity verifier on Liquid. Proof sizes and times are the sam
 1345 B on BP and 945 B on BP++ either way. The proof file records the transcript, and
 `verify` follows it. In code: `bpvm_zk::prove_with` / `verify_with` with a `TranscriptKind`.
 
+**Curves.** `--curve ristretto255` (default) proves over ristretto255 (dalek). `--curve
+secp256k1` proves over secp256k1, Liquid's curve (feature `secp256k1` of `bpvm-cli`, on by
+default): proofs are 24 B larger (33-byte points) and proving is slower (fib on BP++: 0.63 s
+against 0.25 s, 969 B against 945 B; verification 20 ms either way). The proof file records the
+curve, and `verify` follows it (`ristretto255` if the file names none); blindings and
+commitments are hex in the curve's own encoding. In code: `witness_with_io_for::<C>` and a
+`Statement<C>`. A Simplicity verifier on Liquid needs `--curve secp256k1 --backend bppp
+--transcript sha256`.
+
 Command line:
 
 ```
 bpvm run    <elf> [-i input.json]                                   execute only
 bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp]
-            [--transcript merlin|sha256]
+            [--transcript merlin|sha256] [--curve ristretto255|secp256k1]
 bpvm verify <elf> <proof.json> [--backend bp|bppp]
-bpvm [--no-prove] [--backend bp|bppp] [--transcript merlin|sha256] <elf> [-i input.json]
+bpvm [--no-prove] [--backend bp|bppp] [--transcript merlin|sha256] [--curve ristretto255|secp256k1]
+     <elf> [-i input.json]
                                               demo: prove, verify, reject a forged exit code
 ```
 
@@ -100,7 +110,8 @@ bpvm guest/mul/mul.elf -i guest/mul/mul.json                         # c = a·b,
 ```
 
 - `*.proof.json` is public: step count, opcode counts, exit code, public inputs/outputs,
-  the commitments $V_i = v_i B + r_i \tilde B$ (ristretto255, dalek `PedersenGens`) and the
+  the commitments $V_i = v_i B + r_i \tilde B$ (on the proof's curve: ristretto255 with dalek's
+  `PedersenGens`, or secp256k1) and the
   proof. The verifier rebuilds the statement from the ELF and this file.
 - `*.secrets.json` holds the openings $(v_i, r_i)$ of every commitment, inputs and outputs.
 
