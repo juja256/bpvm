@@ -55,8 +55,18 @@ default): proofs are 24 B larger (33-byte points) and proving is slower (fib on 
 against 0.25 s, 969 B against 945 B; verification 20 ms either way). The proof file records the
 curve, and `verify` follows it (`ristretto255` if the file names none); blindings and
 commitments are hex in the curve's own encoding. In code: `witness_with_io_for::<C>` and a
-`Statement<C>`. A Simplicity verifier on Liquid needs `--curve secp256k1 --backend bppp
---transcript sha256`.
+`Statement<C>`.
+
+**Simplicity.** With the feature `simplicity` of `bpvm-zk`, `vm::simplicity::compile` turns a
+statement into a Simplicity program that verifies its proofs on Liquid (secp256k1, BP++, SHA-256
+transcript), and `vm::simplicity::prove` makes those proofs, bound to the spending transaction's
+`sig_all_hash` (the CLI's proofs are not bound to a transaction, so the program rejects them). The
+example `simplicity` compiles and runs it as a node would. Today the program accepts honest proofs
+but is far too large for a transaction: `mul` (776 gates, 1 660 MSM terms) gives a 2.17 MB
+program and fib a 3.55 MB one, against 400 kWU for a standard transaction. The VM's fixed tables
+and dense linear constraints dominate; a direct R1CS circuit of the same statement fits in a few
+kWU (measurements in the fork's
+[docs/simplicity-verifier.md](https://github.com/juja256/bulletproofs/blob/main/docs/simplicity-verifier.md)).
 
 Command line:
 
