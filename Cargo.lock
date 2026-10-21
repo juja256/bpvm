@@ -164,7 +164,7 @@ dependencies = [
 [[package]]
 name = "bulletproofs"
 version = "5.0.1"
-source = "git+https://github.com/juja256/bulletproofs?rev=c6de57bad88bd524943517d633162bf55a3c315d#c6de57bad88bd524943517d633162bf55a3c315d"
+source = "git+https://github.com/juja256/bulletproofs?rev=109e7f91c36ddbb5487b3b2b88e4aa19ca1539d3#109e7f91c36ddbb5487b3b2b88e4aa19ca1539d3"
 dependencies = [
  "byteorder",
  "clear_on_drop",
