@@ -17,6 +17,10 @@ rand.workspace = true
 bulletproofs = { workspace = true, features = ["cheats"] }
 
 [features]
+# secp256k1 next to the default ristretto255 (`witness_for::<Secp256k1>`).
+secp256k1 = ["bulletproofs/secp256k1"]
+# Simplicity verifiers of guest proofs (secp256k1, SHA-256 transcript): `vm::simplicity`.
+simplicity = ["secp256k1", "bulletproofs/simplicity"]
 # The BP++ norm argument in variable time by default (secp256k1-zkp does the same); build with
 # --no-default-features for the constant-time one.
 default = ["bppp-vartime"]
@@ -24,3 +28,7 @@ default = ["bppp-vartime"]
 parallel = ["bulletproofs/parallel"]
 # BP++: the norm argument in variable time (its inputs are uniformly random); same proofs.
 bppp-vartime = ["bulletproofs/bppp-vartime"]
+
+[[example]]
+name = "simplicity_fib"
+required-features = ["simplicity"]

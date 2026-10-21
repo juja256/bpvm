@@ -5,11 +5,12 @@ use bpvm_zk::isa::PROG_WIDTH;
 use bpvm_zk::Backend;
 use bulletproofs::r1cs::{CircuitBuilder, Cost, Prover, R1CSError, R1CSProof, Verifier};
 use bulletproofs::{BulletproofGens, PedersenGens};
+use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
 
 const BACKENDS: [Backend; 2] = [Backend::Bp, Backend::Bppp];
 
-fn env<CS: CircuitBuilder>(cs: &mut CS) -> Result<Env<'_, CS>, R1CSError> {
+fn env<CS: CircuitBuilder>(cs: &mut CS) -> Result<Env<'_, Scalar, CS>, R1CSError> {
     Env::new(cs, vec![vec![0; PROG_WIDTH]])
 }
 
@@ -24,7 +25,7 @@ fn range<CS: CircuitBuilder>(cs: &mut CS, value: Option<u64>, bits: u32) -> Resu
 /// `r = a op b` for public 32-bit `a, b, r`; `prover` says whether to assign witnesses.
 fn bitop<CS: CircuitBuilder>(cs: &mut CS, tag: u64, a: u32, b: u32, r: u32, prover: bool) -> Result<(), R1CSError> {
     let mut e = env(cs)?;
-    e.bitop(tag, lc(s(a as u64)), lc(s(b as u64)), lc(s(r as u64)), prover.then_some((a, b, r)))?;
+    e.bitop(tag, lc(s::<Scalar>(a as u64)), lc(s::<Scalar>(b as u64)), lc(s::<Scalar>(r as u64)), prover.then_some((a, b, r)))?;
     Ok(())
 }
 
@@ -84,7 +85,7 @@ fn digit<CS: CircuitBuilder>(cs: &mut CS, k: u32, x: u64, prover: bool) -> Resul
     let e = env(cs)?;
     let t = e.range_table(k);
     let d = e.cs.lookup_value(t, prover.then_some(x))?;
-    e.cs.constrain(lc(d) - s(x));
+    e.cs.constrain(lc(d) - s::<Scalar>(x));
     Ok(())
 }
 

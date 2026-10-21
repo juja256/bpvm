@@ -351,3 +351,40 @@ fn sha256_transcript_proofs() {
     assert_eq!(TranscriptKind::default(), TranscriptKind::Merlin);
     assert_eq!(TranscriptKind::Sha256.name(), "sha256");
 }
+
+/// The same program over secp256k1 with the SHA-256 transcript (feature `secp256k1`): both
+/// backends prove and verify; a forged exit code is rejected.
+#[cfg(feature = "secp256k1")]
+#[test]
+fn secp256k1_sha256_proofs() {
+    use bpvm_zk::TranscriptKind;
+    use bulletproofs::curve::Secp256k1;
+    let img = small_program();
+    let t = exec(&img);
+    let (stmt, wit) = bpvm_zk::witness_for::<Secp256k1>(&img, &t).unwrap();
+    for backend in BACKENDS {
+        let (proof, stats) = bpvm_zk::prove_with(&stmt, &wit, backend, TranscriptKind::Sha256).unwrap();
+        println!("secp256k1 {backend:?}: {} gates, {} B", stats.gates, stats.proof_bytes);
+        bpvm_zk::verify_with(&stmt, &proof, TranscriptKind::Sha256).unwrap();
+        let mut forged = stmt.clone();
+        forged.exit_code ^= 1;
+        assert!(bpvm_zk::verify_with(&forged, &proof, TranscriptKind::Sha256).is_err());
+        assert!(bpvm_zk::verify_with(&stmt, &proof, TranscriptKind::Merlin).is_err());
+    }
+}
+
+/// The Simplicity verifier of a guest proof compiles, and its witness is built from the proof
+/// (feature `simplicity`; running it is measured by `examples/simplicity_fib.rs`).
+#[cfg(feature = "simplicity")]
+#[test]
+fn simplicity_verifier_compiles() {
+    use bulletproofs::curve::Secp256k1;
+    use bulletproofs::simplicity::{dummy_env, sighash_of};
+    let img = small_program();
+    let t = exec(&img);
+    let (stmt, wit) = bpvm_zk::witness_for::<Secp256k1>(&img, &t).unwrap();
+    let (proof, _) = bpvm_zk::vm::simplicity::prove(&stmt, &wit, &sighash_of(&dummy_env())).unwrap();
+    let sv = bpvm_zk::vm::simplicity::compile(&stmt).unwrap();
+    assert!(sv.witness(&proof).is_ok());
+    println!("simplicity verifier: {:?}", sv.stats().msm_terms);
+}

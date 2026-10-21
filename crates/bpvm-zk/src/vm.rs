@@ -30,8 +30,9 @@ use std::time::{Duration, Instant};
 
 use bpvm_emu::{Image, Trace};
 use bulletproofs::r1cs::{Backend, CircuitBuilder, Cost, Prover, R1CSError, R1CSProof, Variable, Verifier};
-use bulletproofs::{BulletproofGens, PedersenGens, Sha256Transcript, TranscriptBackend};
-use curve25519_dalek::ristretto::CompressedRistretto;
+use bulletproofs::curve::ff::Field as _;
+use bulletproofs::curve::{Curve, Field};
+use bulletproofs::{BulletproofGens, PedersenGens, Ristretto, Sha256Transcript, TranscriptBackend};
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
 
@@ -39,8 +40,9 @@ use crate::chips::{chip, ram_key, MemW, Row};
 use crate::gadgets::*;
 use crate::isa::{canon, program_table, Fields, Op, ProgRow};
 
+/// The statement over the curve `C` (ristretto255 by default).
 #[derive(Clone, Debug)]
-pub struct Statement {
+pub struct Statement<C: Curve = Ristretto> {
     pub program: Vec<ProgRow>,
     pub entry: u32,
     /// Initial RAM image: (word-aligned address, value). Accesses outside it are unprovable.
@@ -50,26 +52,26 @@ pub struct Statement {
     pub op_counts: BTreeMap<Op, usize>,
     pub exit_code: u32,
     /// Committed inputs: their RAM words (zero in `ram`) and Pedersen commitments.
-    pub private_in: Vec<Committed>,
+    pub private_in: Vec<Committed<C>>,
     /// Committed outputs: final values of these words open the commitments.
-    pub private_out: Vec<Committed>,
+    pub private_out: Vec<Committed<C>>,
     /// Revealed outputs: (word address, final value).
     pub public_out: Vec<(u32, u32)>,
 }
 
 /// A value $v = \sum_k 2^{32k}\,\mathsf{mem}[\mathsf{words}_k]$ bound by a Pedersen commitment.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Committed {
+pub struct Committed<C: Curve = Ristretto> {
     pub words: Vec<u32>,
-    pub commitment: CompressedRistretto,
+    pub commitment: C::Compressed,
 }
 
 /// Prover-side I/O choices: which word groups are committed (with blindings) and which
 /// words are revealed.
 #[derive(Clone, Debug, Default)]
-pub struct IoSpec {
-    pub private_in: Vec<(Vec<u32>, Scalar)>,
-    pub private_out: Vec<(Vec<u32>, Scalar)>,
+pub struct IoSpec<F: Field = Scalar> {
+    pub private_in: Vec<(Vec<u32>, F)>,
+    pub private_out: Vec<(Vec<u32>, F)>,
     pub public_out: Vec<u32>,
 }
 
@@ -81,7 +83,7 @@ fn join(words: impl IntoIterator<Item = u32>) -> u64 {
     })
 }
 
-impl Statement {
+impl<C: Curve> Statement<C> {
     /// The statement for running `img` (public inputs already patched in): private input
     /// words are zeroed in the public RAM image.
     pub fn new(
@@ -89,10 +91,10 @@ impl Statement {
         steps: usize,
         op_counts: BTreeMap<Op, usize>,
         exit_code: u32,
-        private_in: Vec<Committed>,
-        private_out: Vec<Committed>,
+        private_in: Vec<Committed<C>>,
+        private_out: Vec<Committed<C>>,
         public_out: Vec<(u32, u32)>,
-    ) -> Statement {
+    ) -> Statement<C> {
         let hidden: std::collections::BTreeSet<u32> = private_in.iter().flat_map(|c| c.words.iter().copied()).collect();
         let ram = img.data.iter().map(|(a, v)| (*a, if hidden.contains(a) { 0 } else { *v })).collect();
         Statement { program: program_table(img), entry: img.entry, ram, steps, op_counts, exit_code, private_in, private_out, public_out }
@@ -100,14 +102,14 @@ impl Statement {
 
     /// Absorb the statement into the transcript (strong Fiat–Shamir: the R1CS transcript
     /// does not hash the constraint system itself).
-    fn bind<T: TranscriptBackend + ?Sized>(&self, t: &mut T) {
+    pub(crate) fn bind<T: TranscriptBackend + ?Sized>(&self, t: &mut T) {
         t.append_message(b"bpvm-version", b"1");
         t.append_u64(b"entry", self.entry as u64);
         t.append_u64(b"steps", self.steps as u64);
         t.append_u64(b"exit", self.exit_code as u64);
         for r in &self.program {
-            for x in r.to_scalars() {
-                t.append_message(b"prog", x.as_bytes());
+            for x in r.to_scalars::<C::Scalar>() {
+                t.append_message(b"prog", &x.to_bytes32());
             }
         }
         for (a, v) in &self.ram {
@@ -147,7 +149,8 @@ struct CpuRow {
 }
 
 #[derive(Clone, Debug)]
-pub struct Witness {
+/// The witness over the field `F` (the scalars of the statement's curve).
+pub struct Witness<F: Field = Scalar> {
     cpu: Vec<CpuRow>,
     chips: BTreeMap<Op, Vec<Row>>,
     final_regs: [(u32, u64); 32],
@@ -155,23 +158,34 @@ pub struct Witness {
     /// Initial values of all RAM words (the public image has private inputs zeroed).
     init_ram: BTreeMap<u32, u32>,
     /// (value, blinding) of each private input, then of each private output.
-    openings: Vec<(u64, Scalar)>,
+    openings: Vec<(u64, F)>,
 }
 
-impl Witness {
+impl<F: Field> Witness<F> {
     /// (value, blinding) of each private input, then of each private output.
-    pub fn openings(&self) -> &[(u64, Scalar)] {
+    pub fn openings(&self) -> &[(u64, F)] {
         &self.openings
     }
 }
 
-/// Build the public statement and the witness from an image and its execution trace.
+/// Build the public statement and the witness from an image and its execution trace
+/// (ristretto255; [`witness_for`] for another curve).
 pub fn witness(img: &Image, trace: &Trace) -> Result<(Statement, Witness), String> {
-    witness_with_io(img, trace, &IoSpec::default())
+    witness_for::<Ristretto>(img, trace)
 }
 
-/// As [`witness`], with committed inputs/outputs and revealed outputs.
+/// As [`witness`], with committed inputs/outputs and revealed outputs (ristretto255).
 pub fn witness_with_io(img: &Image, trace: &Trace, io: &IoSpec) -> Result<(Statement, Witness), String> {
+    witness_with_io_for::<Ristretto>(img, trace, io)
+}
+
+/// [`witness`] over the curve `C`.
+pub fn witness_for<C: Curve>(img: &Image, trace: &Trace) -> Result<(Statement<C>, Witness<C::Scalar>), String> {
+    witness_with_io_for::<C>(img, trace, &IoSpec::default())
+}
+
+/// [`witness_with_io`] over the curve `C`.
+pub fn witness_with_io_for<C: Curve>(img: &Image, trace: &Trace, io: &IoSpec<C::Scalar>) -> Result<(Statement<C>, Witness<C::Scalar>), String> {
     let mut regs = [0u32; 32];
     let mut reg_t = [0u64; 32];
     let mut ram: BTreeMap<u32, (u32, u64)> = img.data.iter().map(|(a, v)| (*a, (*v, 0))).collect();
@@ -225,17 +239,17 @@ pub fn witness_with_io(img: &Image, trace: &Trace, io: &IoSpec) -> Result<(State
         });
     }
 
-    let pc_gens = PedersenGens::default();
+    let pc_gens = PedersenGens::<C>::for_curve();
     let word = |m: &BTreeMap<u32, u32>, a: &u32| m.get(a).copied().ok_or_else(|| format!("I/O word {a:#x} is outside the RAM image"));
     let final_mem: BTreeMap<u32, u32> = ram.iter().map(|(a, (v, _))| (*a, *v)).collect();
     let mut openings = Vec::new();
-    let mut commit = |mem: &BTreeMap<u32, u32>, groups: &[(Vec<u32>, Scalar)]| -> Result<Vec<Committed>, String> {
+    let mut commit = |mem: &BTreeMap<u32, u32>, groups: &[(Vec<u32>, C::Scalar)]| -> Result<Vec<Committed<C>>, String> {
         groups
             .iter()
             .map(|(words, r)| {
                 let v = join(words.iter().map(|a| word(mem, a)).collect::<Result<Vec<_>, _>>()?);
                 openings.push((v, *r));
-                Ok(Committed { words: words.clone(), commitment: pc_gens.commit(Scalar::from(v), *r).compress() })
+                Ok(Committed { words: words.clone(), commitment: C::compress(&pc_gens.commit(C::Scalar::from(v), *r)) })
             })
             .collect()
     };
@@ -252,14 +266,14 @@ pub fn witness_with_io(img: &Image, trace: &Trace, io: &IoSpec) -> Result<(State
 
 /// Build the circuit. `committed`: variables of the statement's commitments, inputs then
 /// outputs.
-fn synthesize<CS: CircuitBuilder>(cs: &mut CS, st: &Statement, wit: Option<&Witness>, committed: &[Variable]) -> Result<(), R1CSError> {
+fn synthesize<C: Curve, CS: CircuitBuilder<C::Scalar>>(cs: &mut CS, st: &Statement<C>, wit: Option<&Witness<C::Scalar>>, committed: &[Variable]) -> Result<(), R1CSError> {
     if st.steps == 0 {
         return Err(R1CSError::GadgetError { description: "empty trace".into() });
     }
     let mut env = Env::new(cs, st.program.iter().map(|r| r.to_row()).collect())?;
 
     // CPU chip
-    let mut pc: Lc = lc(s(st.entry as u64));
+    let mut pc: Lc<C::Scalar> = lc(s::<C::Scalar>(st.entry as u64));
     for k in 0..st.steps {
         let r = wit.map(|w| &w.cpu[k]);
         let f = r.map(|r| r.fields);
@@ -278,24 +292,24 @@ fn synthesize<CS: CircuitBuilder>(cs: &mut CS, st: &Statement, wit: Option<&Witn
         let old = env.witness(r.map(|r| r.old as u64))?;
         let tp: Vec<_> = (0..3).map(|i| env.witness(r.map(|r| r.t_prev[i]))).collect::<Result<_, _>>()?;
 
-        let delta = env.mul(wr.into(), vd - old);
-        let new = old + delta;
+        let delta = env.mul(lc(wr), lc(vd) - old);
+        let new = lc(old) + delta;
         env.range32(vd.into(), r.map(|r| r.vd))?;
 
         let k64 = k as u64;
         let accesses = [(rs1, lc(v1), lc(v1)), (rs2, lc(v2), lc(v2)), (rd, lc(old), new)];
         for (i, (key, read, write)) in accesses.into_iter().enumerate() {
             let t = 4 * k64 + 1 + i as u64;
-            env.range_bits(lc(s(t)) - tp[i] - Scalar::ONE, r.map(|r| t - 1 - r.t_prev[i]), TS_BITS)?;
+            env.range_bits(lc(s::<C::Scalar>(t)) - tp[i] - C::Scalar::ONE, r.map(|r| t - 1 - r.t_prev[i]), TS_BITS)?;
             env.mem_read(&[key.into(), read, tp[i].into()])?;
-            env.mem_write(&[key.into(), write, lc(s(t))])?;
+            env.mem_write(&[key.into(), write, lc(s::<C::Scalar>(t))])?;
         }
 
-        env.bus_send(&[op.into(), lc(s(k64)), pc.clone(), next_pc.into(), imm.into(), v1.into(), v2.into(), vd.into()])?;
+        env.bus_send(&[op.into(), lc(s::<C::Scalar>(k64)), pc.clone(), next_pc.into(), imm.into(), v1.into(), v2.into(), vd.into()])?;
 
         if k + 1 == st.steps {
-            env.constrain(op - Op::ECALL.id());
-            env.constrain(v2 - s(st.exit_code as u64));
+            env.constrain(lc(op) - Op::ECALL.id::<C::Scalar>());
+            env.constrain(v2 - s::<C::Scalar>(st.exit_code as u64));
         }
         pc = next_pc.into();
     }
@@ -313,17 +327,17 @@ fn synthesize<CS: CircuitBuilder>(cs: &mut CS, st: &Statement, wit: Option<&Witn
         let fin = wit.map(|w| w.final_regs[r as usize]);
         let v = env.witness(fin.map(|f| f.0 as u64))?;
         let t = env.witness(fin.map(|f| f.1))?;
-        env.mem_read(&[lc(s(r)), v.into(), t.into()])?;
+        env.mem_read(&[lc(s::<C::Scalar>(r)), v.into(), t.into()])?;
     }
     let (cin, cout) = committed.split_at(st.private_in.len());
     // word address -> (index of the committed value, limb index)
-    let limbs = |group: &[Committed]| -> BTreeMap<u32, (usize, usize)> {
+    let limbs = |group: &[Committed<C>]| -> BTreeMap<u32, (usize, usize)> {
         group.iter().enumerate().flat_map(|(i, c)| c.words.iter().enumerate().map(move |(k, a)| (*a, (i, k)))).collect()
     };
     let (in_limbs, out_limbs) = (limbs(&st.private_in), limbs(&st.private_out));
     let public_out: BTreeMap<u32, u32> = st.public_out.iter().copied().collect();
-    let mut in_sum: Vec<Lc> = cin.iter().map(|v| lc(*v)).collect();
-    let mut out_sum: Vec<Lc> = cout.iter().map(|v| lc(*v)).collect();
+    let mut in_sum: Vec<Lc<C::Scalar>> = cin.iter().map(|v| lc(*v)).collect();
+    let mut out_sum: Vec<Lc<C::Scalar>> = cout.iter().map(|v| lc(*v)).collect();
 
     for (j, (addr, init)) in st.ram.iter().enumerate() {
         let key = ram_key(*addr);
@@ -333,8 +347,8 @@ fn synthesize<CS: CircuitBuilder>(cs: &mut CS, st: &Statement, wit: Option<&Witn
                 let w = wit.map(|w| w.init_ram[addr]);
                 let v = env.witness(w.map(u64::from))?;
                 env.range32(v.into(), w)?;
-                in_sum[i] = in_sum[i].clone() - v * pow2(32 * k as u32);
-                env.mem_write(&[lc(key), v.into(), lc(Scalar::ZERO)])?;
+                in_sum[i] = in_sum[i].clone() - v * pow2::<C::Scalar>(32 * k as u32);
+                env.mem_write(&[lc(key), v.into(), lc(C::Scalar::ZERO)])?;
             }
         }
         let fin = wit.map(|w| w.final_ram[j]);
@@ -342,10 +356,10 @@ fn synthesize<CS: CircuitBuilder>(cs: &mut CS, st: &Statement, wit: Option<&Witn
         let t = env.witness(fin.map(|f| f.1))?;
         env.mem_read(&[lc(key), v.into(), t.into()])?;
         if let Some(&(i, k)) = out_limbs.get(addr) {
-            out_sum[i] = out_sum[i].clone() - v * pow2(32 * k as u32);
+            out_sum[i] = out_sum[i].clone() - v * pow2::<C::Scalar>(32 * k as u32);
         }
         if let Some(x) = public_out.get(addr) {
-            env.constrain(v - s(*x as u64));
+            env.constrain(v - s::<C::Scalar>(*x as u64));
         }
     }
     let covered = |m: &BTreeMap<u32, (usize, usize)>| m.keys().all(|a| st.ram.binary_search_by_key(a, |(b, _)| *b).is_ok());
@@ -383,18 +397,25 @@ impl Stats {
 /// Generators of capacity at least `n`, shared across proofs and verifications in this process
 /// (deriving them is a hash-to-group per point). The cache only grows: it keeps
 /// 320 bytes per generator pair for the largest circuit seen so far.
-fn gens_for(n: usize) -> std::sync::RwLockReadGuard<'static, BulletproofGens> {
-    use std::sync::{OnceLock, RwLock};
-    static GENS: OnceLock<RwLock<BulletproofGens>> = OnceLock::new();
-    let lock = GENS.get_or_init(|| RwLock::new(BulletproofGens::new(1, 1)));
+fn gens_for<C: Curve>(n: usize) -> std::sync::Arc<BulletproofGens<C>> {
+    // one cache per curve, grown on demand
+    use std::any::{Any, TypeId};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static GENS: OnceLock<Mutex<HashMap<TypeId, Box<dyn Any + Send + Sync>>>> = OnceLock::new();
     let need = n.next_power_of_two();
-    if lock.read().unwrap().gens_capacity < need {
-        lock.write().unwrap().increase_capacity(need);
+    let mut map = GENS.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    let entry = map.entry(TypeId::of::<C>()).or_insert_with(|| Box::new(Arc::new(BulletproofGens::<C>::for_curve(1, 1))));
+    let gens = entry.downcast_mut::<Arc<BulletproofGens<C>>>().expect("the cache holds this curve's generators");
+    if gens.gens_capacity < need {
+        let mut g = (**gens).clone();
+        g.increase_capacity(need);
+        *gens = Arc::new(g);
     }
-    lock.read().unwrap()
+    gens.clone()
 }
 
-fn commit_prover<T: TranscriptBackend>(prover: &mut Prover<'_, &mut T>, st: &Statement, wit: &Witness) -> Result<Vec<Variable>, R1CSError> {
+fn commit_prover<C: Curve, T: TranscriptBackend>(prover: &mut Prover<'_, &mut T, C>, st: &Statement<C>, wit: &Witness<C::Scalar>) -> Result<Vec<Variable>, R1CSError> {
     let expected = st.private_in.iter().chain(&st.private_out);
     if wit.openings.len() != st.private_in.len() + st.private_out.len() {
         return Err(R1CSError::GadgetError { description: "openings do not match the statement".into() });
@@ -402,7 +423,7 @@ fn commit_prover<T: TranscriptBackend>(prover: &mut Prover<'_, &mut T>, st: &Sta
     expected
         .zip(&wit.openings)
         .map(|(c, (v, r))| {
-            let (point, var) = prover.commit(Scalar::from(*v), *r);
+            let (point, var) = prover.commit(C::Scalar::from(*v), *r);
             if point != c.commitment {
                 return Err(R1CSError::GadgetError { description: "opening does not match the commitment".into() });
             }
@@ -412,9 +433,9 @@ fn commit_prover<T: TranscriptBackend>(prover: &mut Prover<'_, &mut T>, st: &Sta
 }
 
 /// The cost of the circuit for `st` on both backends (synthesized without a witness).
-pub fn cost(st: &Statement) -> Result<Cost, R1CSError> {
+pub fn cost<C: Curve>(st: &Statement<C>) -> Result<Cost, R1CSError> {
     let mut transcript = Transcript::new(b"bpvm-size");
-    let mut verifier = Verifier::new(&mut transcript);
+    let mut verifier = Verifier::<_, C>::for_curve(&mut transcript);
     let committed: Vec<Variable> =
         st.private_in.iter().chain(&st.private_out).map(|c| verifier.commit(c.commitment)).collect();
     synthesize(&mut verifier, st, None, &committed)?;
@@ -455,12 +476,12 @@ impl std::str::FromStr for TranscriptKind {
 }
 
 /// Prove under Merlin ([`prove_with`] picks the transcript).
-pub fn prove(st: &Statement, wit: &Witness, backend: Backend) -> Result<(R1CSProof, Stats), R1CSError> {
+pub fn prove<C: Curve>(st: &Statement<C>, wit: &Witness<C::Scalar>, backend: Backend) -> Result<(R1CSProof<C>, Stats), R1CSError> {
     prove_staged(st, wit, backend, |_| {})
 }
 
 /// [`prove`] under the transcript `kind`.
-pub fn prove_with(st: &Statement, wit: &Witness, backend: Backend, kind: TranscriptKind) -> Result<(R1CSProof, Stats), R1CSError> {
+pub fn prove_with<C: Curve>(st: &Statement<C>, wit: &Witness<C::Scalar>, backend: Backend, kind: TranscriptKind) -> Result<(R1CSProof<C>, Stats), R1CSError> {
     match kind {
         TranscriptKind::Merlin => prove_in(Transcript::new(b"bpvm"), st, wit, backend, |_| {}),
         TranscriptKind::Sha256 => prove_in(Sha256Transcript::new(b"bpvm"), st, wit, backend, |_| {}),
@@ -469,13 +490,13 @@ pub fn prove_with(st: &Statement, wit: &Witness, backend: Backend, kind: Transcr
 
 /// [`prove`] with a callback after each stage ("synthesized"), for profiling.
 #[doc(hidden)]
-pub fn prove_staged(st: &Statement, wit: &Witness, backend: Backend, stage: impl FnMut(&'static str)) -> Result<(R1CSProof, Stats), R1CSError> {
+pub fn prove_staged<C: Curve>(st: &Statement<C>, wit: &Witness<C::Scalar>, backend: Backend, stage: impl FnMut(&'static str)) -> Result<(R1CSProof<C>, Stats), R1CSError> {
     prove_in(Transcript::new(b"bpvm"), st, wit, backend, stage)
 }
 
-fn prove_in<T: TranscriptBackend>(mut transcript: T, st: &Statement, wit: &Witness, backend: Backend, mut stage: impl FnMut(&'static str)) -> Result<(R1CSProof, Stats), R1CSError> {
+fn prove_in<C: Curve, T: TranscriptBackend>(mut transcript: T, st: &Statement<C>, wit: &Witness<C::Scalar>, backend: Backend, mut stage: impl FnMut(&'static str)) -> Result<(R1CSProof<C>, Stats), R1CSError> {
     let start = Instant::now();
-    let pc_gens = PedersenGens::default();
+    let pc_gens = PedersenGens::<C>::for_curve();
     st.bind(&mut transcript);
     let mut prover = Prover::new(&pc_gens, &mut transcript);
     prover.set_backend(backend);
@@ -483,7 +504,7 @@ fn prove_in<T: TranscriptBackend>(mut transcript: T, st: &Statement, wit: &Witne
     synthesize(&mut prover, st, Some(wit), &committed)?;
     stage("synthesized");
     let mut stats = Stats::new(backend, &prover.cost());
-    let proof = prover.prove(&gens_for(stats.gens_capacity))?;
+    let proof = prover.prove(&gens_for::<C>(stats.gens_capacity))?;
     stats.proof_bytes = proof.to_bytes().len();
     stats.time = start.elapsed();
     Ok((proof, stats))
@@ -491,28 +512,60 @@ fn prove_in<T: TranscriptBackend>(mut transcript: T, st: &Statement, wit: &Witne
 
 /// Verify with the backend that produced `proof` (each backend is a sound proof system on
 /// its own; the encoding names it), under Merlin ([`verify_with`] picks the transcript).
-pub fn verify(st: &Statement, proof: &R1CSProof) -> Result<Duration, R1CSError> {
+pub fn verify<C: Curve>(st: &Statement<C>, proof: &R1CSProof<C>) -> Result<Duration, R1CSError> {
     verify_with(st, proof, TranscriptKind::Merlin)
 }
 
 /// [`verify`] under the transcript `kind` (the prover's).
-pub fn verify_with(st: &Statement, proof: &R1CSProof, kind: TranscriptKind) -> Result<Duration, R1CSError> {
+pub fn verify_with<C: Curve>(st: &Statement<C>, proof: &R1CSProof<C>, kind: TranscriptKind) -> Result<Duration, R1CSError> {
     match kind {
         TranscriptKind::Merlin => verify_in(Transcript::new(b"bpvm"), st, proof),
         TranscriptKind::Sha256 => verify_in(Sha256Transcript::new(b"bpvm"), st, proof),
     }
 }
 
-fn verify_in<T: TranscriptBackend>(mut transcript: T, st: &Statement, proof: &R1CSProof) -> Result<Duration, R1CSError> {
+fn verify_in<C: Curve, T: TranscriptBackend>(mut transcript: T, st: &Statement<C>, proof: &R1CSProof<C>) -> Result<Duration, R1CSError> {
     let start = Instant::now();
-    let pc_gens = PedersenGens::default();
+    let pc_gens = PedersenGens::<C>::for_curve();
     st.bind(&mut transcript);
-    let mut verifier = Verifier::new(&mut transcript);
+    let mut verifier = Verifier::<_, C>::for_curve(&mut transcript);
     verifier.set_backend(proof.backend());
     let committed: Vec<Variable> =
         st.private_in.iter().chain(&st.private_out).map(|c| verifier.commit(c.commitment)).collect();
     synthesize(&mut verifier, st, None, &committed)?;
     let cap = verifier.cost().gens_capacity(proof.backend());
-    verifier.verify(proof, &pc_gens, &gens_for(cap))?;
+    verifier.verify(proof, &pc_gens, &gens_for::<C>(cap))?;
     Ok(start.elapsed())
+}
+
+/// Proofs a Simplicity verifier on Liquid checks (feature `simplicity`): BP++ over secp256k1
+/// with the SHA-256 transcript, bound to the spending transaction's `sig_all_hash`.
+#[cfg(feature = "simplicity")]
+pub mod simplicity {
+    use super::*;
+    use bulletproofs::curve::Secp256k1;
+    use bulletproofs::simplicity::{CompileTranscript, SimplicityVerifier, SIGHASH_LABEL};
+
+    /// Prove `st` for the transaction whose `sig_all_hash` is `sighash`.
+    pub fn prove(st: &Statement<Secp256k1>, wit: &Witness<<Secp256k1 as Curve>::Scalar>, sighash: &[u8; 32]) -> Result<(R1CSProof<Secp256k1>, Stats), R1CSError> {
+        let mut t = Sha256Transcript::new(b"bpvm");
+        st.bind(&mut t);
+        t.append_message(SIGHASH_LABEL, sighash);
+        prove_in(t, st, wit, Backend::Bppp, |_| {})
+    }
+
+    /// The Simplicity program that verifies [`prove`]'s proofs of `st`.
+    pub fn compile(st: &Statement<Secp256k1>) -> Result<SimplicityVerifier, R1CSError> {
+        let mut t = CompileTranscript::new(b"bpvm");
+        st.bind(&mut t);
+        t.append_message(SIGHASH_LABEL, &[0u8; 32]);
+        let pc_gens = PedersenGens::<Secp256k1>::for_curve();
+        let mut verifier = Verifier::<_, Secp256k1>::for_curve(&mut t);
+        verifier.set_backend(Backend::Bppp);
+        let committed: Vec<Variable> =
+            st.private_in.iter().chain(&st.private_out).map(|c| verifier.commit(c.commitment)).collect();
+        synthesize(&mut verifier, st, None, &committed)?;
+        let cap = verifier.cost().gens_capacity(Backend::Bppp);
+        verifier.compile_to_simplicity(&pc_gens, &gens_for::<Secp256k1>(cap))
+    }
 }

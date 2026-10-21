@@ -6,7 +6,7 @@
 //! other than `x0`. The CPU chip fetches this tuple by a lookup keyed by `pc`.
 
 use bpvm_emu::{AluOp, BranchOp, Image, Instr, Width};
-use curve25519_dalek::scalar::Scalar;
+use bulletproofs::curve::Field;
 
 macro_rules! ops {
     ($($name:ident),* $(,)?) => {
@@ -31,8 +31,8 @@ ops! {
 }
 
 impl Op {
-    pub fn id(self) -> Scalar {
-        Scalar::from(self as u8 as u64)
+    pub fn id<F: Field>(self) -> F {
+        F::from(self as u8 as u64)
     }
 }
 
@@ -144,8 +144,8 @@ impl ProgRow {
         vec![self.pc as u64, f.op as u8 as u64, f.rd as u64, f.rs1 as u64, f.rs2 as u64, f.imm as u64, f.wr as u64]
     }
 
-    pub fn to_scalars(&self) -> Vec<Scalar> {
-        self.to_row().into_iter().map(Scalar::from).collect()
+    pub fn to_scalars<F: Field>(&self) -> Vec<F> {
+        self.to_row().into_iter().map(F::from).collect()
     }
 }
 
