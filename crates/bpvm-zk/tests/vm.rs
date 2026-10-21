@@ -374,7 +374,7 @@ fn secp256k1_sha256_proofs() {
 }
 
 /// The Simplicity verifier of a guest proof compiles, and its witness is built from the proof
-/// (feature `simplicity`; running it is measured by `examples/simplicity_fib.rs`).
+/// (feature `simplicity`; [`simplicity_verifier_runs`] runs it).
 #[cfg(feature = "simplicity")]
 #[test]
 fn simplicity_verifier_compiles() {
@@ -387,4 +387,30 @@ fn simplicity_verifier_compiles() {
     let sv = bpvm_zk::vm::simplicity::compile(&stmt).unwrap();
     assert!(sv.witness(&proof).is_ok());
     println!("simplicity verifier: {:?}", sv.stats().msm_terms);
+}
+
+/// The Simplicity verifier accepts an honest proof as a node runs it, and rejects a proof for
+/// another transaction. A cost over the budget or the cell limit is reported only after every
+/// check has passed, so it counts as accepting here.
+#[cfg(feature = "simplicity")]
+#[test]
+fn simplicity_verifier_runs() {
+    use bulletproofs::curve::Secp256k1;
+    use bulletproofs::simplicity::{dummy_env, dummy_env_with_output, sighash_of, ExecError};
+    let img = small_program();
+    let t = exec(&img);
+    let (stmt, wit) = bpvm_zk::witness_for::<Secp256k1>(&img, &t).unwrap();
+    let env = dummy_env();
+    let sv = bpvm_zk::vm::simplicity::compile(&stmt).unwrap();
+    let accepted = |r: Result<bulletproofs::simplicity::Report, ExecError>| match r {
+        Ok(_) | Err(ExecError::Budget { .. }) | Err(ExecError::Cells(_)) => true,
+        Err(e) => {
+            println!("rejected: {e:?}");
+            false
+        }
+    };
+    let (proof, _) = bpvm_zk::vm::simplicity::prove(&stmt, &wit, &sighash_of(&env)).unwrap();
+    assert!(accepted(sv.execute(&sv.witness(&proof).unwrap(), &env)), "an honest proof");
+    let (other, _) = bpvm_zk::vm::simplicity::prove(&stmt, &wit, &sighash_of(&dummy_env_with_output(7))).unwrap();
+    assert!(!accepted(sv.execute(&sv.witness(&other).unwrap(), &env)), "a proof for another transaction");
 }

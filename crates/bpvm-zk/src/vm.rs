@@ -548,8 +548,8 @@ pub mod simplicity {
 
     /// Prove `st` for the transaction whose `sig_all_hash` is `sighash`.
     pub fn prove(st: &Statement<Secp256k1>, wit: &Witness<<Secp256k1 as Curve>::Scalar>, sighash: &[u8; 32]) -> Result<(R1CSProof<Secp256k1>, Stats), R1CSError> {
+        // the sighash first: prove_in binds the statement
         let mut t = Sha256Transcript::new(b"bpvm");
-        st.bind(&mut t);
         t.append_message(SIGHASH_LABEL, sighash);
         prove_in(t, st, wit, Backend::Bppp, |_| {})
     }
@@ -557,8 +557,8 @@ pub mod simplicity {
     /// The Simplicity program that verifies [`prove`]'s proofs of `st`.
     pub fn compile(st: &Statement<Secp256k1>) -> Result<SimplicityVerifier, R1CSError> {
         let mut t = CompileTranscript::new(b"bpvm");
-        st.bind(&mut t);
         t.append_message(SIGHASH_LABEL, &[0u8; 32]);
+        st.bind(&mut t);
         let pc_gens = PedersenGens::<Secp256k1>::for_curve();
         let mut verifier = Verifier::<_, Secp256k1>::for_curve(&mut t);
         verifier.set_backend(Backend::Bppp);
