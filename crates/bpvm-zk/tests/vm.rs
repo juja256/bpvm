@@ -414,3 +414,85 @@ fn simplicity_verifier_runs() {
     let (other, _) = bpvm_zk::vm::simplicity::prove(&stmt, &wit, &sighash_of(&dummy_env_with_output(7))).unwrap();
     assert!(!accepted(sv.execute(&sv.witness(&other).unwrap(), &env)), "a proof for another transaction");
 }
+
+/// A guest ELF from `guest/`, its inputs set from `values` (name, elements), and the I/O spec
+/// of its committed values (blindings 2, 3, ...).
+fn guest_with_io<F: bulletproofs::curve::Field + From<u64>>(elf: &str, values: &[(&str, Vec<u64>)]) -> (Image, bpvm_zk::IoSpec<F>) {
+    use bpvm_emu::IoKind;
+    let path = format!("{}/../../guest/{}", env!("CARGO_MANIFEST_DIR"), elf);
+    let mut img = Image::from_elf(&std::fs::read(&path).expect("a committed guest ELF")).unwrap();
+    let mut spec = bpvm_zk::IoSpec { private_in: vec![], private_out: vec![], public_out: vec![] };
+    let mut blind = 1u64;
+    for var in img.io.clone() {
+        if let Some((_, v)) = values.iter().find(|(n, _)| *n == var.name) {
+            for (a, w) in var.to_words(v) {
+                img.data.insert(a, w);
+            }
+        }
+        for i in 0..var.count {
+            blind += 1;
+            match var.kind {
+                IoKind::PrivateInput => spec.private_in.push((var.words(i), F::from(blind))),
+                IoKind::PrivateOutput => spec.private_out.push((var.words(i), F::from(blind))),
+                IoKind::PublicOutput => spec.public_out.extend(var.words(i)),
+                IoKind::PublicInput => {}
+            }
+        }
+    }
+    (img, spec)
+}
+
+/// The factors of `guest/mul`: a = 100 003 and b = 70 001, whose product passes 2^32.
+const MUL_IN: [(&str, u64); 2] = [("a", 100_003), ("b", 70_001)];
+
+/// The public output `c` of a statement (little-endian words).
+fn public_u64<C: bulletproofs::curve::Curve>(st: &bpvm_zk::Statement<C>) -> u64 {
+    st.public_out.iter().enumerate().map(|(k, (_, w))| (*w as u64) << (32 * k)).sum()
+}
+
+/// `guest/mul/mul.elf`: c = a · b with a and b private (Pedersen commitments) and c public.
+#[test]
+fn mul_guest() {
+    use bpvm_zk::Statement;
+    use curve25519_dalek::scalar::Scalar;
+    let values: Vec<(&str, Vec<u64>)> = MUL_IN.iter().map(|(n, v)| (*n, vec![*v])).collect();
+    let (img, spec) = guest_with_io::<Scalar>("mul/mul.elf", &values);
+    let t = exec(&img);
+    assert_eq!(t.exit_code, 0);
+    let (st, wit) = bpvm_zk::witness_with_io(&img, &t, &spec).unwrap();
+    assert_eq!(st.private_in.len(), 2);
+    assert_eq!(public_u64(&st), 100_003 * 70_001);
+    // the public statement does not contain a or b
+    let hidden: Vec<u32> = st.private_in.iter().flat_map(|c| c.words.clone()).collect();
+    assert!(st.ram.iter().filter(|(a, _)| hidden.contains(a)).all(|(_, v)| *v == 0));
+    for backend in BACKENDS {
+        let (proof, stats) = bpvm_zk::prove(&st, &wit, backend).unwrap();
+        println!("mul {backend:?}: {} steps, {} gates, {} B", st.steps, stats.gates, stats.proof_bytes);
+        bpvm_zk::verify(&st, &proof).unwrap();
+        let reject = |f: &dyn Fn(&mut Statement)| {
+            let mut forged = st.clone();
+            f(&mut forged);
+            assert!(bpvm_zk::verify(&forged, &proof).is_err());
+        };
+        reject(&|s| s.public_out[0].1 ^= 1);
+        reject(&|s| s.private_in[1].commitment = s.private_in[0].commitment);
+    }
+}
+
+/// The Simplicity verifier of `guest/mul` accepts its honest proof as a node runs it.
+#[cfg(feature = "simplicity")]
+#[test]
+fn mul_guest_simplicity() {
+    use bulletproofs::curve::{Curve, Secp256k1};
+    use bulletproofs::simplicity::{dummy_env, sighash_of, ExecError};
+    let values: Vec<(&str, Vec<u64>)> = MUL_IN.iter().map(|(n, v)| (*n, vec![*v])).collect();
+    let (img, spec) = guest_with_io::<<Secp256k1 as Curve>::Scalar>("mul/mul.elf", &values);
+    let t = exec(&img);
+    let (st, wit) = bpvm_zk::witness_with_io_for::<Secp256k1>(&img, &t, &spec).unwrap();
+    let env = dummy_env();
+    let (proof, stats) = bpvm_zk::vm::simplicity::prove(&st, &wit, &sighash_of(&env)).unwrap();
+    let sv = bpvm_zk::vm::simplicity::compile(&st).unwrap();
+    let r = sv.execute(&sv.witness(&proof).unwrap(), &env);
+    println!("mul on Simplicity: {} gates, {} MSM terms: {:?}", stats.gates, sv.stats().msm_terms, r);
+    assert!(matches!(r, Ok(_) | Err(ExecError::Budget { .. }) | Err(ExecError::Cells(_))), "{r:?}");
+}

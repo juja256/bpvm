@@ -12,6 +12,7 @@ common/     shared by all C guests
 fib/        F(10) through memory (loads, stores, .data, .bss)
 sha256/     SHA-256("abc"), one block
 balance/    confidential balance check with Pedersen-committed inputs and outputs
+mul/        knowledge of factors: c = a · b, a and b private, c public
 ```
 
 | example | steps | exit code | what it shows |
@@ -19,6 +20,7 @@ balance/    confidential balance check with Pedersen-committed inputs and output
 | `fib` | 78 | 55 = F(10) | the smallest end-to-end proof |
 | `sha256` | 5 904 | 186 = `0xba`, first digest byte | a real hash function, 315k multipliers |
 | `balance` | 72 | 0 (balanced) | public and private I/O, commitments, JSON input |
+| `mul` | 18 | 0 | private factors, a public 64-bit product (`mul`, `mulhu`); 776 BP++ gates |
 
 ## Requirements
 

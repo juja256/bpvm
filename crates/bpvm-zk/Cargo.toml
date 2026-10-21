@@ -30,5 +30,5 @@ parallel = ["bulletproofs/parallel"]
 bppp-vartime = ["bulletproofs/bppp-vartime"]
 
 [[example]]
-name = "simplicity_fib"
+name = "simplicity"
 required-features = ["simplicity"]
