@@ -17,8 +17,12 @@ start.o: $(COMMON)start.c
 $(NAME).o: $(NAME).c $(COMMON)bpvm.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Stack bytes (default 1024): its words are part of the proven RAM image, so a guest that
+# needs little stack sets less (`bpvm run` reports how much a run touched).
+STACK_SIZE ?=
+
 $(NAME).elf: start.o $(NAME).o $(COMMON)link.ld
-	$(LD) -T $(COMMON)link.ld --no-relax start.o $(NAME).o -o $@
+	$(LD) -T $(COMMON)link.ld --no-relax $(if $(STACK_SIZE),--defsym=__stack_size=$(STACK_SIZE)) start.o $(NAME).o -o $@
 
 # Disassembly
 dump: $(NAME).elf

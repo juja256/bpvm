@@ -325,6 +325,14 @@ fn run<C: Curve>(curve: CurveKind, path: &str, input: Option<&String>, mode: Mod
 
     let trace = Machine::from_image(&img).run(MAX_STEPS).map_err(|t| format!("execution trapped: {t:?}"))?;
     println!("executed {} steps, exit code {}", trace.steps.len(), trace.exit_code);
+    if let Some(u) = img.stack_usage(&trace) {
+        // the stack's words are part of the proven RAM image: its size (STACK_SIZE when the
+        // guest is linked) is a cost, and it is public, so a run never chooses it
+        println!("stack:    {} of {} bytes touched", u.touched, u.size);
+        if u.overflow > 0 {
+            eprintln!("warning: the stack pointer went {} bytes below the stack: raise STACK_SIZE (the program overwrote the data below it)", u.overflow);
+        }
+    }
 
     let (stmt, wit) = bpvm_zk::witness_with_io_for::<C>(&img, &trace, &spec)?;
     let mix: Vec<String> = stmt.op_counts.iter().map(|(op, n)| format!("{op:?}×{n}")).collect();

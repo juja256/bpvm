@@ -79,6 +79,25 @@ fn range_digits_must_sum_to_the_value() {
     }
 }
 
+/// A negative difference (`0 - x` with `x = 1`, i.e. `p - 1`), as reading a timestamp from the
+/// future gives: no digits of any width add up to it.
+fn negative<CS: CircuitBuilder>(cs: &mut CS, bits: u32, prover: bool) -> Result<(), R1CSError> {
+    let mut e = env(cs)?;
+    let x = e.witness(prover.then_some(1))?;
+    e.range_bits(lc(s::<Scalar>(0)) - x, prover.then_some((1u64 << bits) - 1), bits)?;
+    Ok(())
+}
+
+#[test]
+fn negative_differences_are_rejected() {
+    for backend in BACKENDS {
+        for bits in [8, 16, 24, 32] {
+            let (proof, _) = unchecked(|| prove(backend, |cs| negative(cs, bits, true))).unwrap();
+            assert!(verify(&proof, |cs| negative(cs, bits, false)).is_err(), "{backend:?} {bits} bits");
+        }
+    }
+}
+
 /// `x = d` with `d` a lookup into the `k`-bit table: the linear relation holds, only the
 /// lookup can catch `x = 2^k`.
 fn digit<CS: CircuitBuilder>(cs: &mut CS, k: u32, x: u64, prover: bool) -> Result<(), R1CSError> {

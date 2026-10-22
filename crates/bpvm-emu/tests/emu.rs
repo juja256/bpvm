@@ -131,3 +131,39 @@ fn malformed_elf_is_an_error_not_a_panic() {
         bad[i] ^= 0xff;
     }
 }
+
+/// The stack region comes from the ELF; a run reports the bytes it touched and any overflow.
+#[test]
+fn stack_usage_of_the_guests() {
+    let load = |g: &str| {
+        let p = format!("{}/../../guest/{g}/{g}.elf", env!("CARGO_MANIFEST_DIR"));
+        bpvm_emu::Image::from_elf(&std::fs::read(p).unwrap()).unwrap()
+    };
+    let mul = load("mul");
+    let t = Machine::from_image(&mul).run(1 << 20).unwrap();
+    let u = mul.stack_usage(&t).unwrap();
+    assert_eq!((u.size, u.touched, u.overflow), (16, 0, 0), "mul touches no stack");
+    let sha = load("sha256");
+    let t = Machine::from_image(&sha).run(1 << 20).unwrap();
+    let u = sha.stack_usage(&t).unwrap();
+    assert_eq!((u.size, u.touched, u.overflow), (512, 428, 0), "sha256: the compression function's frames");
+}
+
+/// The stack pointer going below the region (after it is set to the top) is an overflow.
+#[test]
+fn stack_overflow_is_reported() {
+    use bpvm_emu::asm::*;
+    let (bottom, top) = (0x2000u32, 0x2010u32);
+    // sp = top; sp -= 32; sw zero, 0(sp); halt
+    let mut code = li(2, top).to_vec();
+    code.push(addi(2, 2, -32));
+    code.push(sw(0, 2, 0));
+    code.extend(halt());
+    let mut img = bpvm_emu::Image { entry: 0, code: Default::default(), data: Default::default(), io: Vec::new(), stack: Some((bottom, top)) };
+    for (i, w) in code.iter().enumerate() {
+        img.code.insert(4 * i as u32, *w);
+    }
+    let t = Machine::from_image(&img).run(100).unwrap();
+    let u = img.stack_usage(&t).unwrap();
+    assert_eq!((u.size, u.touched, u.overflow), (16, 0, 16));
+}

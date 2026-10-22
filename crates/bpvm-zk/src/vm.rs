@@ -270,7 +270,7 @@ fn synthesize<C: Curve, CS: CircuitBuilder<C::Scalar>>(cs: &mut CS, st: &Stateme
     if st.steps == 0 {
         return Err(R1CSError::GadgetError { description: "empty trace".into() });
     }
-    let mut env = Env::new(cs, st.program.iter().map(|r| r.to_row()).collect())?;
+    let mut env = Env::new(cs, st.program.iter().map(|r| r.to_row()).collect())?.for_steps(st.steps);
 
     // CPU chip
     let mut pc: Lc<C::Scalar> = lc(s::<C::Scalar>(st.entry as u64));
@@ -300,7 +300,7 @@ fn synthesize<C: Curve, CS: CircuitBuilder<C::Scalar>>(cs: &mut CS, st: &Stateme
         let accesses = [(rs1, lc(v1), lc(v1)), (rs2, lc(v2), lc(v2)), (rd, lc(old), new)];
         for (i, (key, read, write)) in accesses.into_iter().enumerate() {
             let t = 4 * k64 + 1 + i as u64;
-            env.range_bits(lc(s::<C::Scalar>(t)) - tp[i] - C::Scalar::ONE, r.map(|r| t - 1 - r.t_prev[i]), TS_BITS)?;
+            env.range_bits(lc(s::<C::Scalar>(t)) - tp[i] - C::Scalar::ONE, r.map(|r| t - 1 - r.t_prev[i]), env.ts_bits)?;
             env.mem_read(&[key.into(), read, tp[i].into()])?;
             env.mem_write(&[key.into(), write, lc(s::<C::Scalar>(t))])?;
         }
@@ -321,8 +321,11 @@ fn synthesize<C: Curve, CS: CircuitBuilder<C::Scalar>>(cs: &mut CS, st: &Stateme
         }
     }
 
-    // Memory boundary: Init (public, free) and Final (witness).
-    for r in 0..32u64 {
+    // Memory boundary: Init (public, free) and Final (witness). Only the registers the program
+    // names: an access takes its register from the fetched row of the public program table, so
+    // no other register is ever accessed, and the init and final read of one would cancel.
+    let named: std::collections::BTreeSet<u64> = st.program.iter().flat_map(|r| [r.fields.rd, r.fields.rs1, r.fields.rs2]).map(|x| x as u64).collect();
+    for r in named {
         env.mem_init(&[r, 0, 0])?;
         let fin = wit.map(|w| w.final_regs[r as usize]);
         let v = env.witness(fin.map(|f| f.0 as u64))?;

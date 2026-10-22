@@ -10,7 +10,7 @@ use bpvm_zk::Backend;
 const DATA: u32 = 0x1000;
 
 fn image(code: &[u32], data_words: usize) -> Image {
-    let mut img = Image { entry: 0, code: BTreeMap::new(), data: BTreeMap::new(), io: Vec::new() };
+    let mut img = Image { entry: 0, code: BTreeMap::new(), data: BTreeMap::new(), io: Vec::new(), stack: None };
     for (i, w) in code.iter().enumerate() {
         img.code.insert(4 * i as u32, *w);
     }
@@ -462,6 +462,9 @@ fn mul_guest() {
     let (st, wit) = bpvm_zk::witness_with_io(&img, &t, &spec).unwrap();
     assert_eq!(st.private_in.len(), 2);
     assert_eq!(public_u64(&st), 100_003 * 70_001);
+    // a 16-byte stack, timestamps of 8 bits (18 steps), the 8 registers the program names
+    let c = bpvm_zk::cost(&st).unwrap();
+    assert_eq!((c.gates(Backend::Bppp), c.linear(Backend::Bppp)), (384, 576), "BP++ gates and linear slots");
     // the public statement does not contain a or b
     let hidden: Vec<u32> = st.private_in.iter().flat_map(|c| c.words.clone()).collect();
     assert!(st.ram.iter().filter(|(a, _)| hidden.contains(a)).all(|(_, v)| *v == 0));
@@ -495,4 +498,33 @@ fn mul_guest_simplicity() {
     let r = sv.execute(&sv.witness(&proof).unwrap(), &env);
     println!("mul on Simplicity: {} gates, {} MSM terms: {:?}", stats.gates, sv.stats().msm_terms, r);
     assert!(matches!(r, Ok(_) | Err(ExecError::Budget { .. }) | Err(ExecError::Cells(_))), "{r:?}");
+}
+
+/// `n` steps exactly: `addi`s, then the halt.
+fn steps_program(n: usize) -> Image {
+    let mut code: Vec<u32> = (0..n - 2).map(|i| addi(5, 5, i as i32 % 7)).collect();
+    code.extend(halt());
+    image(&code, 0)
+}
+
+/// Timestamps take 8 bits up to 64 steps (every timestamp at most 4·64 = 256) and 16 from 65:
+/// honest traces on both sides of the boundary verify, and the width really changes there.
+#[test]
+fn timestamp_width_follows_the_steps() {
+    assert_eq!((bpvm_zk::gadgets::ts_bits(1), bpvm_zk::gadgets::ts_bits(64), bpvm_zk::gadgets::ts_bits(65)), (8, 8, 16));
+    assert_eq!((bpvm_zk::gadgets::ts_bits(1 << 14), bpvm_zk::gadgets::ts_bits((1 << 14) + 1), bpvm_zk::gadgets::ts_bits(1 << 22), bpvm_zk::gadgets::ts_bits((1 << 22) + 1)), (16, 24, 24, 32));
+    for n in [63usize, 64, 65, 66] {
+        let img = steps_program(n);
+        let t = exec(&img);
+        assert_eq!(t.steps.len(), n);
+        prove_and_verify(&img, &t).unwrap_or_else(|e| panic!("{n} steps: {e}"));
+    }
+    let gates = |n: usize| {
+        let img = steps_program(n);
+        let (st, _) = bpvm_zk::witness(&img, &exec(&img)).unwrap();
+        bpvm_zk::cost(&st).unwrap().gates(Backend::Bppp)
+    };
+    // one more digit per register access (3 a step) from 65 steps
+    let (a, b, c) = (gates(63), gates(64), gates(65));
+    assert!(c - b > (b - a) + 3 * 60, "{a}, {b}, {c}: the width did not change at 65 steps");
 }

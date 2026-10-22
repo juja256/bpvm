@@ -72,8 +72,19 @@ fn digit_widths(bits: u32) -> impl Iterator<Item = u32> {
 pub const MEM_WIDTH: usize = 3;
 /// Width of a bus tuple $(\mathsf{op}, \mathsf{clk}, \mathsf{pc}, \mathsf{next\_pc}, \mathsf{imm}, v_1, v_2, v_d)$.
 pub const BUS_WIDTH: usize = 8;
-/// Bits for timestamp gaps $t - t_{\text{prev}} - 1$.
+/// Bits for timestamp gaps $t - t_{\text{prev}} - 1$ when the trace length is not given.
 pub const TS_BITS: u32 = 24;
+
+/// Bits for the timestamp gaps of a trace of `steps` steps: the smallest multiple of
+/// [`DIGIT_BITS`] with $4 \cdot \mathsf{steps} \le 2^{\mathsf{bits}}$. Every timestamp is at most
+/// $4 \cdot \mathsf{steps}$ (a CPU access at $4k + 1 + i$, a RAM access at $4k + 4$), and the
+/// one a read consumes is a real write's, so an honest gap is below $4 \cdot \mathsf{steps}$; a
+/// read from the future gives a negative gap, $p - |d|$, never below $2^{\mathsf{bits}}$.
+pub fn ts_bits(steps: usize) -> u32 {
+    let max = 4 * steps as u64;
+    let need = 64 - max.saturating_sub(1).leading_zeros();
+    need.max(1).div_ceil(DIGIT_BITS) * DIGIT_BITS
+}
 
 /// The constraint system and the shared tables and arguments. Tables without lookups cost
 /// nothing; every table's multiplicities are shared by all its lookups.
@@ -86,6 +97,8 @@ pub struct Env<'a, F: Field, CS: CircuitBuilder<F>> {
     fetch: TableId,
     mem: Reciprocal,
     bus: Reciprocal,
+    /// Bits of the timestamp gaps ([`ts_bits`] of the trace; [`TS_BITS`] by default).
+    pub ts_bits: u32,
     field: core::marker::PhantomData<F>,
 }
 
@@ -98,7 +111,13 @@ impl<'a, F: Field, CS: CircuitBuilder<F>> Env<'a, F, CS> {
         let fetch = cs.table(program)?;
         let mem = cs.reciprocal(MEM_WIDTH)?;
         let bus = cs.reciprocal(BUS_WIDTH)?;
-        Ok(Env { cs, range, pow, bitop, fetch, mem, bus, field: core::marker::PhantomData })
+        Ok(Env { cs, range, pow, bitop, fetch, mem, bus, ts_bits: TS_BITS, field: core::marker::PhantomData })
+    }
+
+    /// Timestamp gaps sized for a trace of `steps` steps ([`ts_bits`]).
+    pub fn for_steps(mut self, steps: usize) -> Self {
+        self.ts_bits = ts_bits(steps);
+        self
     }
 
     /// Memory argument (`Init + Writes = Reads + Final` as multisets): a read, or a final

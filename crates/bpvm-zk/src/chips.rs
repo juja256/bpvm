@@ -349,7 +349,7 @@ fn mem_op<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, x: 
     let key = lc(widx) + pow2::<F>(32);
     let t = x.clk * s::<F>(4) + s::<F>(4);
     let tp = env.witness(m.map(|m| m.t_prev))?;
-    env.range_bits(t.clone() - tp - F::ONE, w.zip(m).map(|(r, m)| 4 * r.clk + 3 - m.t_prev), TS_BITS)?;
+    env.range_bits(t.clone() - tp - F::ONE, w.zip(m).map(|(r, m)| 4 * r.clk + 3 - m.t_prev), env.ts_bits)?;
     let wb_v = m.map(|m| m.before);
 
     let (before, after): (Lc<F>, Lc<F>) = match op {

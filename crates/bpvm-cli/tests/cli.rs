@@ -150,3 +150,11 @@ fn demo_runs_on_secp256k1() {
     let (ok, out) = bpvm(&["--curve", "secp256k1", &elf, "-i", &input]);
     assert!(ok && out.contains("on secp256k1") && out.contains("sanity"), "{out}");
 }
+
+/// `run` reports the stack the run touched against the size the guest was linked with.
+#[test]
+fn run_reports_the_stack() {
+    let (elf, input) = mul();
+    let (ok, out) = bpvm(&["run", &elf, "-i", &input]);
+    assert!(ok && out.contains("stack:    0 of 16 bytes touched"), "{out}");
+}

@@ -8,9 +8,12 @@ SECTIONS
     .rodata : { *(.rodata .rodata.* .srodata .srodata.*) }
     .data   : { *(.data .data.* .sdata .sdata.*) }
     .bss    : { *(.bss .bss.* .sbss .sbss.* COMMON) }
+    /* the stack: STACK_SIZE bytes (rules.mk, default 1024); its words are part of the proven
+       RAM image, so a guest that needs little stack should set less */
     .stack (NOLOAD) : {
         . = ALIGN(16);
-        . += 1024;
+        __stack_bottom = .;
+        . += DEFINED(__stack_size) ? __stack_size : 1024;
         __stack_top = .;
     }
 }

@@ -18,6 +18,34 @@ pub struct Image {
     pub data: BTreeMap<u32, u32>,
     /// I/O variables declared by the guest, sorted by address.
     pub io: Vec<IoVar>,
+    /// The stack region `[bottom, top)` (symbols `__stack_bottom` and `__stack_top`), if the ELF
+    /// names it. Its size is chosen when the guest is linked (`STACK_SIZE`), never from a run.
+    pub stack: Option<(u32, u32)>,
+}
+
+/// How a run used the stack region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StackUsage {
+    /// The region's size in bytes (chosen when the guest is linked).
+    pub size: u32,
+    /// Bytes from the lowest word the run loaded or stored in the region up to its top.
+    pub touched: u32,
+    /// Bytes the stack pointer went below the region's bottom (an overflow into the data
+    /// below it), once it was set to the top; 0 if it stayed inside.
+    pub overflow: u32,
+}
+
+impl Image {
+    /// How `trace` used the stack region; `None` if the ELF names no stack.
+    pub fn stack_usage(&self, trace: &crate::cpu::Trace) -> Option<StackUsage> {
+        let (bottom, top) = self.stack?;
+        let lowest = trace.steps.iter().filter_map(|s| s.mem.map(|m| m.addr)).filter(|a| (bottom..top).contains(a)).min();
+        // the stack pointer from the step that sets it to the top (`_start` builds it in two
+        // instructions: the first leaves a lower value)
+        let sp: Vec<u32> = trace.steps.iter().filter_map(|s| s.write.filter(|(r, _)| *r == 2).map(|(_, v)| v)).skip_while(|v| *v != top).collect();
+        let lowest_sp = sp.iter().copied().min().unwrap_or(top);
+        Some(StackUsage { size: top - bottom, touched: lowest.map_or(0, |a| top - a), overflow: bottom.saturating_sub(lowest_sp) })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,11 +218,44 @@ impl Image {
             }
         }
         img.io = io_vars(bytes)?;
+        img.stack = match (symbol(bytes, "__stack_bottom")?, symbol(bytes, "__stack_top")?) {
+            (Some(b), Some(t)) if b <= t => Some((b, t)),
+            (None, None) => None,
+            _ => return Err("bad stack symbols (__stack_bottom, __stack_top)".into()),
+        };
         Ok(img)
     }
 }
 
 const SHT_SYMTAB: u32 = 2;
+
+/// The value of the symbol `name`, if the ELF has one.
+fn symbol(b: &[u8], name: &str) -> Result<Option<u32>, String> {
+    let shoff = u32_at(b, 32)? as usize;
+    let shentsize = u16_at(b, 46)? as usize;
+    let shnum = u16_at(b, 48)? as usize;
+    if shoff == 0 || shnum == 0 {
+        return Ok(None);
+    }
+    let sh = |i: usize, field: usize| u32_at(b, shoff + i * shentsize + field);
+    for i in 0..shnum {
+        if sh(i, 4)? != SHT_SYMTAB {
+            continue;
+        }
+        let (off, size, entsize) = (sh(i, 16)? as usize, sh(i, 20)? as usize, sh(i, 36)? as usize);
+        if entsize < 16 {
+            return Err("bad symbol table entry size".into());
+        }
+        let strtab = sh(sh(i, 24)? as usize, 16)? as usize;
+        for k in 1..size / entsize {
+            let e = off + k * entsize;
+            if cstr(b, strtab + u32_at(b, e)? as usize)? == name {
+                return Ok(Some(u32_at(b, e + 4)?));
+            }
+        }
+    }
+    Ok(None)
+}
 
 /// Collect symbols that live in `.bpvm.*` sections.
 fn io_vars(b: &[u8]) -> Result<Vec<IoVar>, String> {
