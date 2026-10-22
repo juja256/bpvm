@@ -88,15 +88,17 @@ fn run() -> Result<(), String> {
             // the fee depends on the weight, the weight (slightly) on the proof: build with a
             // first estimate, then again with the fee of the measured weight plus a margin
             let mut fee = liquid::fee_for(liquid::MAX_STANDARD_WEIGHT, fee_rate);
-            for _ in 0..2 {
+            for _ in 0..4 {
                 let mut tx = liquid::spending_tx(prevout, &utxo, to.clone(), fee)?;
                 let env = liquid::env(&tx, &utxo, &contract, genesis);
                 let (proof, _) = bpvm_zk::vm::simplicity::prove(&st, &wit, &sighash_of(&env)).map_err(|e| format!("{e:?}"))?;
                 let spend = sv.spend(&sv.witness(&proof).map_err(|e| format!("{e:?}"))?, &env).map_err(|e| format!("the verifier rejects: {e:?}"))?;
                 liquid::set_witness(&mut tx, &contract, &spend);
                 let weight = tx.weight();
-                let needed = liquid::fee_for(weight + 400, fee_rate);
-                if fee >= needed && fee <= needed + needed / 10 + 10 {
+                // the pruned program's size varies by a few dozen bytes with the proof: aim at
+                // the measured weight plus 1000 WU, accept anything that pays the real weight
+                let (needed, target) = (liquid::fee_for(weight, fee_rate), liquid::fee_for(weight + 1000, fee_rate));
+                if fee >= needed && fee <= target + target / 10 {
                     if weight > liquid::MAX_STANDARD_WEIGHT {
                         return Err(format!("weight {weight} over the standard limit"));
                     }
@@ -109,7 +111,7 @@ fn run() -> Result<(), String> {
                     }
                     return Ok(());
                 }
-                fee = needed;
+                fee = target;
             }
             Err("the fee did not settle".into())
         }

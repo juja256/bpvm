@@ -76,7 +76,11 @@ would, and the witness stack is `[witness, program, cmr, control block]`. The ex
 in a state file), `liquid_mul spend TXID:VOUT [--broadcast]` fetches the funding output from
 Esplora, proves, checks and (with `--broadcast`) posts the spend. The spend weighs about
 300 kWU (a standard transaction allows 400 kWU): the verifier's own bytes pay for its cost, so no
-annex padding is needed (annex padding is non-standard on Liquid).
+annex padding is needed (annex padding is non-standard on Liquid). First run (2026-10-22):
+funding [`e1ef4d0f…e8ee`](https://blockstream.info/liquidtestnet/tx/e1ef4d0f758cef2b620e27eac557e5830bca9d7026a3600c1781fd2f0898e8ee)
+(faucet, 100 000 sat), spend [`bca66084…795a`](https://blockstream.info/liquidtestnet/tx/bca66084bd923af5cb269483d6b401b4cd5ea298fb27570938be9668b061795a)
+confirmed in block 2 671 850: weight 299 929 WU, fee 7 524 sat (0.1 sat/vB), witness stack
+803 + 298 347 + 32 + 33 bytes.
 
 Command line:
 
