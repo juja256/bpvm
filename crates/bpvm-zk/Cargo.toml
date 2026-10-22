@@ -25,3 +25,7 @@ parallel = ["bulletproofs/parallel"]
 [[example]]
 name = "simplicity"
 required-features = ["simplicity"]
+
+[[example]]
+name = "liquid_mul"
+required-features = ["simplicity"]
