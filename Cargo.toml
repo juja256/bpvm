@@ -8,9 +8,10 @@ license = "MIT"
 
 [workspace.dependencies]
 # The bulletproofs fork with the BP++ backend and the circuit builder (juja256/bulletproofs main,
-# 2bdb269: generic over the curve, one ConstraintSystem trait, witnesses folded into product
-# wires, the stage 4 Simplicity compiler behind `simplicity`).
-bulletproofs = { git = "https://github.com/juja256/bulletproofs", rev = "2bdb2697379d4faa58b33e3035ed093826ab2df3" }
+# d136c0e: generic over the curve, one ConstraintSystem trait, witnesses folded into product
+# wires, the stage 4 Simplicity compiler preferring programs that fit their budget without annex,
+# behind `simplicity`).
+bulletproofs = { git = "https://github.com/juja256/bulletproofs", rev = "d136c0e6265d9fd1a175dd9b1419297a3319b18c" }
 curve25519-dalek = { version = "4.1.3", features = ["digest", "group", "rand_core", "serde"] }
 merlin = "3"
 rand = "0.8"
