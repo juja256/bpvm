@@ -61,10 +61,10 @@ transcript), and `vm::simplicity::prove` makes those proofs, bound to the spendi
 `sig_all_hash` (the CLI's proofs are not bound to a transaction, so the program rejects them). The
 example `simplicity` compiles and runs it as a node would. With the trimmed circuit (a 16-byte
 stack, timestamps sized by the trace, only the registers the program names) `mul` has 384 gates
-and 562 linear slots, and its verifier 976 MSM terms; the fork's stage 4 compiler with the API
-refactor makes it cost 296.8 kWU (2026-10-22; 312 kWU with 576 slots before the refactor), which
-fits a standard transaction (400 kWU). The fork revision this repository pins (stage 3) gives
-773 kWU; fib is far larger either way. Measurements in the fork's
+and 562 linear slots, and its verifier 976 MSM terms; the fork revision this repository pins
+(stage 4 compiler, API refactor) makes it cost 296.8 kWU (2026-10-22; 312 kWU with 576 slots
+before the refactor, 773 kWU with the stage 3 compiler), which fits a standard transaction
+(400 kWU). fib is far larger. Measurements in the fork's
 [docs/simplicity-verifier.md](https://github.com/juja256/bulletproofs/blob/main/docs/simplicity-verifier.md).
 
 Command line:

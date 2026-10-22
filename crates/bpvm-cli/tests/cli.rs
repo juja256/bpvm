@@ -55,6 +55,8 @@ fn prove_and_verify_with_both_backends() {
         reject("backend", &|v| v["backend"] = other.into(), "the file says backend");
         reject("no-backend", &|v| drop(v.as_object_mut().unwrap().remove("backend")), "missing \"backend\"");
         reject("version", &|v| v["bpvm"] = 1.into(), "proof file version 1");
+        // version 2: the circuit before the fork's folding of witnesses into product wires
+        reject("version-2", &|v| v["bpvm"] = 2.into(), "proof file version 2");
         reject("steps", &|v| v["steps"] = 50_000_000u64.into(), "steps must be in");
         reject("zero-steps", &|v| v["steps"] = 0.into(), "steps must be in");
         reject("op-counts", &|v| v["steps"] = (v["steps"].as_u64().unwrap() + 1).into(), "do not add up");

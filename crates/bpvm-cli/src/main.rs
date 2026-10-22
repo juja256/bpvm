@@ -43,8 +43,9 @@ use bulletproofs::curve::{Ristretto, Secp256k1};
 use serde_json::{json, Map, Value};
 
 const MAX_STEPS: u64 = 1 << 20;
-/// Version of the proof file; 2: the circuit on the fork's builder operations (BP or BP++).
-const PROOF_FILE_VERSION: u64 = 2;
+/// Version of the proof file; 2: the circuit on the fork's builder operations (BP or BP++);
+/// 3: witnesses folded into product wires (the fork's API refactor, 2026-10-22).
+const PROOF_FILE_VERSION: u64 = 3;
 const USAGE: &str = "usage:
   bpvm run    <elf> [-i input.json]
   bpvm prove  <elf> [-i input.json] [-o proof.json] [-s secrets.json] [--backend bp|bppp] [--transcript merlin|sha256] [--curve ristretto255|secp256k1]

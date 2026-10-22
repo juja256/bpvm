@@ -39,7 +39,7 @@ use crate::chips::{chip, ram_key, MemW, Row};
 use crate::gadgets::*;
 use crate::isa::{canon, program_table, Fields, Op, ProgRow};
 
-/// The statement over the curve `C` (ristretto255 by default).
+/// The statement over the curve `C`.
 #[derive(Clone, Debug)]
 pub struct Statement<C: Curve> {
     pub program: Vec<ProgRow>,
