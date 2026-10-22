@@ -8,7 +8,7 @@ with Bulletproofs (R1CS + logUp) or Bulletproofs++ (reciprocal form circuit), ch
 proof.
 
 Status (2026-10-19): **M6 done**: the circuit is written against the fork's
-`CircuitBuilder` and proven with either backend (`bpvm --backend bp|bppp`); BP++ proofs
+`ConstraintSystem` and proven with either backend (`bpvm --backend bp|bppp`); BP++ proofs
 are 400 B smaller, a CPU row costs 22 gates instead of 35.5 multipliers (README,
 Benchmarks).
 
@@ -32,7 +32,7 @@ ALU test: 41.7k multipliers or 23.2k gates) including the fixed table costs (202
 ## 0. What is implemented
 
 - `bpvm-emu`: RV32IM interpreter with trace, ELF32 loader, test assembler.
-- `bpvm-zk::gadgets` (`Env`): the fork's `CircuitBuilder` operations — public tables and
+- `bpvm-zk::gadgets` (`Env`): the fork's `ConstraintSystem` operations — public tables and
   lookups (committed multiplicities, shared per table), and two reciprocal arguments: the
   CPU→chip bus and memory consistency. Gadgets: range checks by byte digits (one
   one-column table per digit width $k \le 8$), booleans, `is_zero`, sign bit,

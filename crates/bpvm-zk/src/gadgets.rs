@@ -3,11 +3,11 @@
 //! Gadgets take native witness values as `Option<_>` (`Some` for the prover, `None` for the
 //! verifier) and linear combinations for the constrained quantities; both sides run the same
 //! code so the circuits match. Lookups and reciprocal arguments are the builder operations of
-//! the bulletproofs fork ([`CircuitBuilder`]): the same circuit is proven with Bulletproofs
+//! the bulletproofs fork ([`ConstraintSystem`]): the same circuit is proven with Bulletproofs
 //! (logUp over randomized constraints) or natively with Bulletproofs++ (reciprocal form).
 
 use bulletproofs::curve::Field;
-use bulletproofs::r1cs::{CircuitBuilder, LinearCombination, R1CSError, Reciprocal, TableId, Variable};
+use bulletproofs::r1cs::{ConstraintSystem, LinearCombination, R1CSError, Reciprocal, TableId, Variable};
 
 /// A linear combination over the circuit's field `F` (the scalars of its curve).
 pub type Lc<F> = LinearCombination<F>;
@@ -88,7 +88,7 @@ pub fn ts_bits(steps: usize) -> u32 {
 
 /// The constraint system and the shared tables and arguments. Tables without lookups cost
 /// nothing; every table's multiplicities are shared by all its lookups.
-pub struct Env<'a, F: Field, CS: CircuitBuilder<F>> {
+pub struct Env<'a, F: Field, CS: ConstraintSystem<F>> {
     pub cs: &'a mut CS,
     /// One-column tables $\{0, \dots, 2^k - 1\}$ for $k = 1, \dots, 8$ (index $k - 1$).
     range: Vec<TableId>,
@@ -102,7 +102,7 @@ pub struct Env<'a, F: Field, CS: CircuitBuilder<F>> {
     field: core::marker::PhantomData<F>,
 }
 
-impl<'a, F: Field, CS: CircuitBuilder<F>> Env<'a, F, CS> {
+impl<'a, F: Field, CS: ConstraintSystem<F>> Env<'a, F, CS> {
     /// `program`: the rows of the program table (fetch lookups).
     pub fn new(cs: &'a mut CS, program: Vec<Vec<u64>>) -> Result<Self, R1CSError> {
         let range = (1..=DIGIT_BITS).map(|k| cs.table((0..1u64 << k).map(|x| vec![x]).collect())).collect::<Result<_, _>>()?;
@@ -172,16 +172,16 @@ impl<'a, F: Field, CS: CircuitBuilder<F>> Env<'a, F, CS> {
     }
 
     /// Product of two linear combinations (one multiplier).
-    pub fn mul(&mut self, a: Lc<F>, b: Lc<F>) -> Variable {
-        self.cs.multiply(a, b).2
+    pub fn mul(&mut self, a: Lc<F>, b: Lc<F>) -> Result<Variable, R1CSError> {
+        self.cs.multiply(a, b)
     }
 
-    /// A boolean variable (one multiplier: $b(1-b) = 0$).
+    /// A boolean variable: $b(1-b) = 0$ (one multiplier; the witness is folded into its left
+    /// wire).
     pub fn boolean(&mut self, v: Option<bool>) -> Result<Variable, R1CSError> {
-        let (l, r, o) = self.cs.allocate_multiplier(v.map(|b| (s::<F>(b as u64), s::<F>(!b as u64))))?;
-        self.cs.constrain(lc(l) + r - F::ONE);
-        self.cs.constrain(o.into());
-        Ok(l)
+        let b = self.cs.witness(v.map(|b| s::<F>(b as u64)))?;
+        self.cs.constrain_product(b.into(), lc(Variable::ONE) - b, Lc::default())?;
+        Ok(b)
     }
 
     /// Constrain $0 \le x < 2^{bits}$ by little-endian byte digits; returns the digits.
@@ -220,9 +220,9 @@ impl<'a, F: Field, CS: CircuitBuilder<F>> Env<'a, F, CS> {
     pub fn is_zero(&mut self, x: Lc<F>, v: Option<F>) -> Result<Variable, R1CSError> {
         let z = self.witness_scalar(v.map(|v| s::<F>((v == F::ZERO) as u64)))?;
         let inv = self.witness_scalar(v.map(|v| if v == F::ZERO { F::ZERO } else { Option::from(v.invert()).expect("nonzero") }))?;
-        let p = self.mul(x.clone(), inv.into());
+        let p = self.mul(x.clone(), inv.into())?;
         self.cs.constrain(lc(p) + z - F::ONE);
-        let q = self.mul(x, z.into());
+        let q = self.mul(x, z.into())?;
         self.cs.constrain(q.into());
         Ok(z)
     }

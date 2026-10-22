@@ -2,7 +2,7 @@
 
 Experimental zkVM for RV32IM programs (Rust/C guests) proven with **Bulletproofs** or
 **Bulletproofs++** (chosen per proof), with reciprocal-argument (logUp) lookups and memory
-checking. The circuit is written once against the `CircuitBuilder` of the
+checking. The circuit is written once against the `ConstraintSystem` of the
 [bulletproofs fork](https://github.com/juja256/bulletproofs) and lowered to either proof
 system. See [DESIGN.md](DESIGN.md).
 
@@ -28,11 +28,10 @@ The example ELFs are committed. To rebuild them or write your own guest see
 [guest-rs/README.md](guest-rs/README.md) (Rust: rust-src + lld).
 
 `--features parallel` (on `bpvm-cli` or `bpvm-zk`) enables the multi-threaded prover and
-verifier of the bulletproofs fork (rayon); proofs are identical to the serial ones.
-The default feature `bppp-vartime` computes the BP++ norm argument in variable time: its inputs
-are uniformly random given the transcript, the commitments to the witness stay constant time,
-and the proofs are the same (secp256k1-zkp's BP++ does the same). It proves ≈ 13% faster;
-`--no-default-features` gives the constant-time norm argument.
+verifier of the bulletproofs fork (rayon); proofs are identical to the serial ones. The fork
+computes the BP++ norm argument in variable time: its inputs are uniformly random given the
+transcript, the commitments to the witness stay constant time (secp256k1-zkp's BP++ does the
+same).
 
 **Backends.** `--backend bp` (default) is Bulletproofs: upstream protocol, logUp over
 randomized constraints. `--backend bppp` is Bulletproofs++ (ePrint 2022/510, experimental,
@@ -50,12 +49,11 @@ The target is a Simplicity verifier on Liquid. Proof sizes and times are the sam
 `verify` follows it. In code: `bpvm_zk::prove_with` / `verify_with` with a `TranscriptKind`.
 
 **Curves.** `--curve ristretto255` (default) proves over ristretto255 (dalek). `--curve
-secp256k1` proves over secp256k1, Liquid's curve (feature `secp256k1` of `bpvm-cli`, on by
-default): proofs are 24 B larger (33-byte points) and proving is slower (fib on BP++: 0.63 s
+secp256k1` proves over secp256k1, Liquid's curve: proofs are 24 B larger (33-byte points) and proving is slower (fib on BP++: 0.63 s
 against 0.25 s, 969 B against 945 B; verification 20 ms either way). The proof file records the
 curve, and `verify` follows it (`ristretto255` if the file names none); blindings and
-commitments are hex in the curve's own encoding. In code: `witness_with_io_for::<C>` and a
-`Statement<C>`.
+commitments are hex in the curve's own encoding. In code: `witness::<C>`,
+`witness_with_io::<C>` and a `Statement<C>`, generic over `bulletproofs::curve::Curve`.
 
 **Simplicity.** With the feature `simplicity` of `bpvm-zk`, `vm::simplicity::compile` turns a
 statement into a Simplicity program that verifies its proofs on Liquid (secp256k1, BP++, SHA-256
@@ -63,9 +61,10 @@ transcript), and `vm::simplicity::prove` makes those proofs, bound to the spendi
 `sig_all_hash` (the CLI's proofs are not bound to a transaction, so the program rejects them). The
 example `simplicity` compiles and runs it as a node would. With the trimmed circuit (a 16-byte
 stack, timestamps sized by the trace, only the registers the program names) `mul` has 384 gates
-and 990 MSM terms; the fork's stage 4 compiler makes its verifier 312 kWU, which fits a standard
-transaction (400 kWU). The fork revision this repository pins (stage 3) gives 773 kWU; fib is
-far larger either way. Measurements in the fork's
+and 562 linear slots, and its verifier 976 MSM terms; the fork's stage 4 compiler with the API
+refactor makes it cost 296.8 kWU (2026-10-22; 312 kWU with 576 slots before the refactor), which
+fits a standard transaction (400 kWU). The fork revision this repository pins (stage 3) gives
+773 kWU; fib is far larger either way. Measurements in the fork's
 [docs/simplicity-verifier.md](https://github.com/juja256/bulletproofs/blob/main/docs/simplicity-verifier.md).
 
 Command line:
@@ -165,30 +164,30 @@ what it hides.
 - **What does not.** The stack's size is fixed when the guest is linked, never taken from a run
   (a run's stack depth can depend on private data); the timestamp width follows the public step
   count; the registers in the boundary follow the public program. None of them adds a channel.
-- **Out of scope:** timing and memory side channels of the prover's machine (the default
-  `bppp-vartime` runs the norm argument in variable time on inputs that are uniformly random
-  given the transcript), and anything the guest itself writes to public outputs.
+- **Out of scope:** timing and memory side channels of the prover's machine (the BP++ norm
+  argument runs in variable time on inputs that are uniformly random given the transcript),
+  and anything the guest itself writes to public outputs.
 
 ## Benchmarks
 
 `cargo run --release -p bpvm-cli [--features parallel] -- --backend bp|bppp <elf>`: execute,
-prove, verify (fib, balance, mul, SHA-256: 2026-10-22 with the trimmed circuit; ec-mini and
-ec-add: 2026-10-20, bulletproofs fork `main` `f9f540a`, before the trims; BP++ with the default
-`bppp-vartime`). BP size is in
+prove, verify (fib, balance, mul, SHA-256: 2026-10-22 with the trimmed circuit and the fork's
+API refactor, which folds witnesses into product wires; ec-mini and ec-add: 2026-10-20,
+bulletproofs fork `main` `f9f540a`, before both). BP size is in
 multipliers (padded to a power of two); BP++ size is gates $N_p + N_m$ plus linear slots
 $N_{lin}$ (free witnesses, multiplicities and copies; they cost no gate but lengthen the
 commitments).
 
 | guest | steps | backend | size | proof | serial prove / verify | parallel prove / verify | parallel RSS |
 |---|---|---|---|---|---|---|---|
-| [Fibonacci](guest/fib/fib.c) | 78 | BP | 3 490 ($2^{12}$) | 1281 B | 0.27 s / 22 ms | 0.24 s / 22 ms | |
-| | | BP++ | 1 919 + 1 409 | 913 B | 0.18 s / 15 ms | 0.15 s / 15 ms | |
-| [balance](guest/balance/balance.c) | 72 | BP | 3 882 ($2^{12}$) | 1281 B | 0.29 s / 23 ms | | |
-| | | BP++ | 1 866 + 2 310 | 945 B | 0.24 s / 18 ms | | |
-| [mul](guest/mul/mul.c) | 18 | BP | 846 ($2^{10}$) | 1153 B | 72 ms / 7 ms | | |
-| | | BP++ | 384 + 576 | 817 B | 58 ms / 5 ms | | |
-| [SHA-256](guest/sha256/sha256.c) | 5 904 | BP | 286 738 ($2^{19}$) | 1729 B | 28.5 s / 2.49 s | 4.60 s / 0.57 s | 0.50 GB |
-| | | BP++ | 160 163 + 105 228 | 1329 B | 15.0 s / 1.11 s | 2.97 s / 0.48 s | 0.71 GB |
+| [Fibonacci](guest/fib/fib.c) | 78 | BP | 3 441 ($2^{12}$) | 1281 B | 0.27 s / 22 ms | 0.24 s / 22 ms | |
+| | | BP++ | 1 919 + 1 313 | 913 B | 0.18 s / 15 ms | 0.15 s / 15 ms | |
+| [balance](guest/balance/balance.c) | 72 | BP | 3 841 ($2^{12}$) | 1281 B | 0.29 s / 23 ms | | |
+| | | BP++ | 1 866 + 2 247 | 945 B | 0.24 s / 18 ms | | |
+| [mul](guest/mul/mul.c) | 18 | BP | 835 ($2^{10}$) | 1153 B | 72 ms / 7 ms | | |
+| | | BP++ | 384 + 562 | 817 B | 58 ms / 5 ms | | |
+| [SHA-256](guest/sha256/sha256.c) | 5 904 | BP | 282 093 ($2^{19}$) | 1729 B | 28.5 s / 2.49 s | 4.60 s / 0.57 s | 0.50 GB |
+| | | BP++ | 160 163 + 100 930 | 1329 B | 15.0 s / 1.11 s | 2.97 s / 0.48 s | 0.71 GB |
 | [ec-mini](guest-rs/ec-mini/src) | 20 713 | BP | 977 716 ($2^{20}$) | 1793 B | 75.8 s / 5.24 s | 11.6 s / 1.06 s | 1.13 GB |
 | | | BP++ | 578 989 + 263 047 | 1457 B | 49.5 s / 3.18 s | 8.89 s / 1.09 s | 2.15 GB |
 | [ec-add](guest-rs/ec-add/src) | 253 556 | BP | 12 407 583 ($2^{24}$) | 2049 B | did not fit in 24 GB | 166 s / 16.4 s | 10.1 GB |

@@ -8,4 +8,4 @@ pub mod isa;
 pub mod vm;
 
 pub use bulletproofs::r1cs::Backend;
-pub use vm::{cost, prove, prove_with, verify, verify_with, witness, witness_for, witness_with_io, witness_with_io_for, Committed, IoSpec, Statement, Stats, TranscriptKind, Witness};
+pub use vm::{cost, prove, prove_with, verify, verify_with, witness, witness_with_io, Committed, IoSpec, Statement, Stats, TranscriptKind, Witness};

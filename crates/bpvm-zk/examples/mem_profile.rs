@@ -1,6 +1,7 @@
 //! Heap profile of proving a guest: live bytes after each stage and the peak.
 //! `cargo run --release -p bpvm-zk --example mem_profile -- guest/sha256/sha256.elf [bp|bppp]`
 
+use bulletproofs::curve::Ristretto;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
@@ -59,7 +60,7 @@ fn main() {
     let img = Image::from_elf(&std::fs::read(&path).unwrap()).unwrap();
     let trace = Machine::from_image(&img).run(1 << 22).unwrap();
     report("executed", None);
-    let (st, wit) = bpvm_zk::witness(&img, &trace).unwrap();
+    let (st, wit) = bpvm_zk::witness::<Ristretto>(&img, &trace).unwrap();
     drop(trace);
     report("witness", None);
     let cost = bpvm_zk::cost(&st).unwrap();

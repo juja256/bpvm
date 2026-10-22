@@ -7,27 +7,20 @@ description = "Bulletproofs R1CS gadgets for bpvm (reciprocal-argument lookups, 
 
 [dependencies]
 bulletproofs.workspace = true
-curve25519-dalek.workspace = true
 merlin.workspace = true
 bpvm-emu = { path = "../bpvm-emu" }
 
 [dev-dependencies]
+curve25519-dalek.workspace = true
 rand.workspace = true
 # Soundness tests: a prover that skips its own checks (bulletproofs::r1cs::cheats).
 bulletproofs = { workspace = true, features = ["cheats"] }
 
 [features]
-# secp256k1 next to the default ristretto255 (`witness_for::<Secp256k1>`).
-secp256k1 = ["bulletproofs/secp256k1"]
 # Simplicity verifiers of guest proofs (secp256k1, SHA-256 transcript): `vm::simplicity`.
-simplicity = ["secp256k1", "bulletproofs/simplicity"]
-# The BP++ norm argument in variable time by default (secp256k1-zkp does the same); build with
-# --no-default-features for the constant-time one.
-default = ["bppp-vartime"]
+simplicity = ["bulletproofs/simplicity"]
 # Multi-threaded prover and verifier (bulletproofs/parallel, rayon).
 parallel = ["bulletproofs/parallel"]
-# BP++: the norm argument in variable time (its inputs are uniformly random); same proofs.
-bppp-vartime = ["bulletproofs/bppp-vartime"]
 
 [[example]]
 name = "simplicity"

@@ -8,12 +8,13 @@
 //! $N_{lin} > 0$.
 //! `cargo run --release -p bpvm-zk --example op_costs [guest.elf ...]`
 
+use bulletproofs::curve::Ristretto;
 use bpvm_emu::{Image, Machine};
 use bpvm_zk::isa::Op;
 use bpvm_zk::{cost, witness, Statement};
 use bulletproofs::r1cs::Cost;
 
-fn load(path: &str) -> Statement {
+fn load(path: &str) -> Statement<Ristretto> {
     let img = Image::from_elf(&std::fs::read(path).expect(path)).unwrap();
     let trace = Machine::from_image(&img).run(1 << 22).unwrap();
     witness(&img, &trace).unwrap().0
@@ -27,14 +28,14 @@ fn measures(c: &Cost) -> [f64; 3] {
 fn main() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../");
     let base = load(&format!("{dir}guest/fib/fib.elf"));
-    let size = |f: &dyn Fn(&mut Statement)| {
+    let size = |f: &dyn Fn(&mut Statement<Ristretto>)| {
         let mut st = base.clone();
         f(&mut st);
         measures(&cost(&st).unwrap())
     };
 
     const K: usize = 16;
-    let per = |f: &dyn Fn(&mut Statement, usize)| {
+    let per = |f: &dyn Fn(&mut Statement<Ristretto>, usize)| {
         let (a, b) = (size(&|s| f(s, K + 1)), size(&|s| f(s, 1)));
         [0, 1, 2].map(|i| (a[i] - b[i]) / K as f64)
     };

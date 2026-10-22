@@ -3,19 +3,20 @@
 use bpvm_zk::gadgets::{lc, s, Env, TAG_AND, TAG_OR, TAG_XOR};
 use bpvm_zk::isa::PROG_WIDTH;
 use bpvm_zk::Backend;
-use bulletproofs::r1cs::{CircuitBuilder, Cost, Prover, R1CSError, R1CSProof, Verifier};
+use bulletproofs::curve::Ristretto;
+use bulletproofs::r1cs::{ConstraintSystem, Cost, Prover, R1CSError, R1CSProof, Verifier};
 use bulletproofs::{BulletproofGens, PedersenGens};
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
 
 const BACKENDS: [Backend; 2] = [Backend::Bp, Backend::Bppp];
 
-fn env<CS: CircuitBuilder>(cs: &mut CS) -> Result<Env<'_, Scalar, CS>, R1CSError> {
+fn env<CS: ConstraintSystem<Scalar>>(cs: &mut CS) -> Result<Env<'_, Scalar, CS>, R1CSError> {
     Env::new(cs, vec![vec![0; PROG_WIDTH]])
 }
 
 /// `x < 2^bits` with `x` a witness; `value` is the prover's.
-fn range<CS: CircuitBuilder>(cs: &mut CS, value: Option<u64>, bits: u32) -> Result<(), R1CSError> {
+fn range<CS: ConstraintSystem<Scalar>>(cs: &mut CS, value: Option<u64>, bits: u32) -> Result<(), R1CSError> {
     let mut e = env(cs)?;
     let x = e.witness(value)?;
     e.range_bits(x.into(), value, bits)?;
@@ -23,14 +24,14 @@ fn range<CS: CircuitBuilder>(cs: &mut CS, value: Option<u64>, bits: u32) -> Resu
 }
 
 /// `r = a op b` for public 32-bit `a, b, r`; `prover` says whether to assign witnesses.
-fn bitop<CS: CircuitBuilder>(cs: &mut CS, tag: u64, a: u32, b: u32, r: u32, prover: bool) -> Result<(), R1CSError> {
+fn bitop<CS: ConstraintSystem<Scalar>>(cs: &mut CS, tag: u64, a: u32, b: u32, r: u32, prover: bool) -> Result<(), R1CSError> {
     let mut e = env(cs)?;
     e.bitop(tag, lc(s::<Scalar>(a as u64)), lc(s::<Scalar>(b as u64)), lc(s::<Scalar>(r as u64)), prover.then_some((a, b, r)))?;
     Ok(())
 }
 
-fn prove(backend: Backend, f: impl FnOnce(&mut Prover<'_, &mut Transcript>) -> Result<(), R1CSError>) -> Result<(R1CSProof, Cost), R1CSError> {
-    let pc = PedersenGens::default();
+fn prove(backend: Backend, f: impl FnOnce(&mut Prover<'_, &mut Transcript, Ristretto>) -> Result<(), R1CSError>) -> Result<(R1CSProof<Ristretto>, Cost), R1CSError> {
+    let pc = PedersenGens::<Ristretto>::default();
     let mut t = Transcript::new(b"bpvm-gadgets");
     let mut p = Prover::new(&pc, &mut t);
     p.set_backend(backend);
@@ -40,8 +41,8 @@ fn prove(backend: Backend, f: impl FnOnce(&mut Prover<'_, &mut Transcript>) -> R
     Ok((p.prove(&bp)?, cost))
 }
 
-fn verify(proof: &R1CSProof, f: impl FnOnce(&mut Verifier<&mut Transcript>) -> Result<(), R1CSError>) -> Result<(), R1CSError> {
-    let pc = PedersenGens::default();
+fn verify(proof: &R1CSProof<Ristretto>, f: impl FnOnce(&mut Verifier<&mut Transcript, Ristretto>) -> Result<(), R1CSError>) -> Result<(), R1CSError> {
+    let pc = PedersenGens::<Ristretto>::default();
     let mut t = Transcript::new(b"bpvm-gadgets");
     let mut v = Verifier::new(&mut t);
     v.set_backend(proof.backend());
@@ -81,7 +82,7 @@ fn range_digits_must_sum_to_the_value() {
 
 /// A negative difference (`0 - x` with `x = 1`, i.e. `p - 1`), as reading a timestamp from the
 /// future gives: no digits of any width add up to it.
-fn negative<CS: CircuitBuilder>(cs: &mut CS, bits: u32, prover: bool) -> Result<(), R1CSError> {
+fn negative<CS: ConstraintSystem<Scalar>>(cs: &mut CS, bits: u32, prover: bool) -> Result<(), R1CSError> {
     let mut e = env(cs)?;
     let x = e.witness(prover.then_some(1))?;
     e.range_bits(lc(s::<Scalar>(0)) - x, prover.then_some((1u64 << bits) - 1), bits)?;
@@ -100,7 +101,7 @@ fn negative_differences_are_rejected() {
 
 /// `x = d` with `d` a lookup into the `k`-bit table: the linear relation holds, only the
 /// lookup can catch `x = 2^k`.
-fn digit<CS: CircuitBuilder>(cs: &mut CS, k: u32, x: u64, prover: bool) -> Result<(), R1CSError> {
+fn digit<CS: ConstraintSystem<Scalar>>(cs: &mut CS, k: u32, x: u64, prover: bool) -> Result<(), R1CSError> {
     let e = env(cs)?;
     let t = e.range_table(k);
     let d = e.cs.lookup_value(t, prover.then_some(x))?;
@@ -123,7 +124,7 @@ fn digits_outside_their_table_are_rejected() {
 
 /// `x < 2^bits` with the prover's digits given: `x` equals their weighted sum, but one digit
 /// is outside its table (a 3-bit digit 8, an 8-bit digit 256), so only the lookup catches it.
-fn range_with_digits<CS: CircuitBuilder>(cs: &mut CS, x: u64, digits: &[u64], bits: u32, prover: bool) -> Result<(), R1CSError> {
+fn range_with_digits<CS: ConstraintSystem<Scalar>>(cs: &mut CS, x: u64, digits: &[u64], bits: u32, prover: bool) -> Result<(), R1CSError> {
     let mut e = env(cs)?;
     let xv = e.witness(prover.then_some(x))?;
     e.range_digits(xv.into(), prover.then(|| digits.to_vec()), bits)?;

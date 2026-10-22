@@ -2,28 +2,22 @@
 //! `cargo run --release -p bpvm-zk --example r1cs_scaling`
 use std::time::Instant;
 
-use bulletproofs::r1cs::{ConstraintSystem, Prover, Verifier};
+use bulletproofs::r1cs::{lc, ConstraintSystem, Prover, Verifier};
 use bulletproofs::{BulletproofGens, PedersenGens};
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
 
 /// A chain x_{i+1} = x_i * x_i + i, i.e. one multiplier per step.
-fn chain<CS: ConstraintSystem>(cs: &mut CS, n: usize, x0: Option<Scalar>) {
-    let mut x = x0;
-    let (_, _, mut prev) = cs.allocate_multiplier(x.map(|v| (v, v))).unwrap();
-    x = x.map(|v| v * v);
-    for i in 1..n {
-        let (l, r, o) = cs.allocate_multiplier(x.map(|v| (v, v))).unwrap();
-        cs.constrain(l - prev);
-        cs.constrain(r - prev);
-        prev = o;
-        x = x.map(|v| v * v);
-        let _ = i;
+fn chain<CS: ConstraintSystem<Scalar>>(cs: &mut CS, n: usize, x0: Option<Scalar>) {
+    let w = cs.witness(x0).unwrap();
+    let mut prev = cs.multiply(w.into(), w.into()).unwrap();
+    for _ in 1..n {
+        prev = cs.multiply(lc(prev), lc(prev)).unwrap();
     }
 }
 
 fn main() {
-    let pc = PedersenGens::default();
+    let pc = PedersenGens::<bulletproofs::curve::Ristretto>::default();
     for log_n in [10, 12, 14, 16, 18] {
         let n = 1usize << log_n;
         let t0 = Instant::now();

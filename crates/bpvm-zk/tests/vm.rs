@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use bpvm_emu::asm::*;
 use bpvm_emu::{Image, Machine, Trace};
 use bpvm_zk::Backend;
+use bulletproofs::curve::Ristretto;
 
 const DATA: u32 = 0x1000;
 
@@ -28,7 +29,7 @@ const BACKENDS: [Backend; 2] = [Backend::Bp, Backend::Bppp];
 
 /// Prove and verify with both backends.
 fn prove_and_verify(img: &Image, trace: &Trace) -> Result<(), String> {
-    let (stmt, wit) = bpvm_zk::witness(img, trace)?;
+    let (stmt, wit) = bpvm_zk::witness::<Ristretto>(img, trace)?;
     for backend in BACKENDS {
         let (proof, stats) = bpvm_zk::prove(&stmt, &wit, backend).map_err(|e| format!("{backend:?}: {e:?}"))?;
         assert_eq!(proof.backend(), backend);
@@ -205,7 +206,7 @@ fn committed_io() {
     }
     let t = exec(&img);
     assert_eq!(t.exit_code, 0);
-    let (st, wit) = bpvm_zk::witness_with_io(&img, &t, &spec).unwrap();
+    let (st, wit) = bpvm_zk::witness_with_io::<Ristretto>(&img, &t, &spec).unwrap();
     assert_eq!((st.private_in.len(), st.private_out.len()), (4, 1));
     assert_eq!(wit.openings()[4].0, 3500, "total");
     // The public statement does not contain the private input values.
@@ -216,7 +217,7 @@ fn committed_io() {
         let (proof, _) = bpvm_zk::prove(&st, &wit, backend).unwrap();
         bpvm_zk::verify(&st, &proof).unwrap();
 
-        let reject = |f: &dyn Fn(&mut Statement)| {
+        let reject = |f: &dyn Fn(&mut Statement<Ristretto>)| {
             let mut forged = st.clone();
             f(&mut forged);
             assert!(bpvm_zk::verify(&forged, &proof).is_err());
@@ -249,7 +250,7 @@ fn assert_rejected(tamper: impl FnOnce(&mut Trace)) {
     let mut t = exec(&img);
     prove_and_verify(&img, &t).expect("honest trace verifies");
     tamper(&mut t);
-    let (stmt, wit) = match bpvm_zk::witness(&img, &t) {
+    let (stmt, wit) = match bpvm_zk::witness::<Ristretto>(&img, &t) {
         // every tamper here must reach the verifier; one caught earlier tests nothing
         Err(e) => panic!("rejected by witness generation, the verifier is not reached: {e}"),
         Ok(x) => x,
@@ -312,7 +313,7 @@ fn reject_skipped_step() {
 fn reject_program_other_than_executed() {
     let img = small_program();
     let t = exec(&img);
-    let (mut stmt, wit) = bpvm_zk::witness(&img, &t).unwrap();
+    let (mut stmt, wit) = bpvm_zk::witness::<Ristretto>(&img, &t).unwrap();
     let pc = t.steps.iter().find(|s| bpvm_zk::isa::canon(s.instr).is_some_and(|f| f.op == bpvm_zk::isa::Op::ADDI)).expect("an executed addi").pc;
     let row = stmt.program.iter_mut().find(|r| r.pc == pc).unwrap();
     row.fields.imm ^= 0x10;
@@ -335,7 +336,7 @@ fn sha256_transcript_proofs() {
     use bpvm_zk::TranscriptKind;
     let img = small_program();
     let t = exec(&img);
-    let (stmt, wit) = bpvm_zk::witness(&img, &t).unwrap();
+    let (stmt, wit) = bpvm_zk::witness::<Ristretto>(&img, &t).unwrap();
     for backend in BACKENDS {
         let (proof, stats) = bpvm_zk::prove_with(&stmt, &wit, backend, TranscriptKind::Sha256).unwrap();
         let (merlin_proof, merlin_stats) = bpvm_zk::prove(&stmt, &wit, backend).unwrap();
@@ -352,16 +353,33 @@ fn sha256_transcript_proofs() {
     assert_eq!(TranscriptKind::Sha256.name(), "sha256");
 }
 
-/// The same program over secp256k1 with the SHA-256 transcript (feature `secp256k1`): both
-/// backends prove and verify; a forged exit code is rejected.
-#[cfg(feature = "secp256k1")]
+/// `witness::<C>` and `witness_with_io::<C>` on both curves: the same circuit, and proofs over
+/// secp256k1 that verify.
+#[test]
+fn generic_witness_on_both_curves() {
+    use bulletproofs::curve::{Curve, Secp256k1};
+    let img = small_program();
+    let t = exec(&img);
+    let (a, _) = bpvm_zk::witness::<Ristretto>(&img, &t).unwrap();
+    let (b, _) = bpvm_zk::witness::<Secp256k1>(&img, &t).unwrap();
+    assert_eq!(bpvm_zk::cost(&a).unwrap(), bpvm_zk::cost(&b).unwrap());
+    let values: Vec<(&str, Vec<u64>)> = MUL_IN.iter().map(|(n, v)| (*n, vec![*v])).collect();
+    let (img, spec) = guest_with_io::<<Secp256k1 as Curve>::Scalar>("mul/mul.elf", &values);
+    let t = exec(&img);
+    let (st, wit) = bpvm_zk::witness_with_io::<Secp256k1>(&img, &t, &spec).unwrap();
+    let (proof, _) = bpvm_zk::prove(&st, &wit, Backend::Bppp).unwrap();
+    bpvm_zk::verify(&st, &proof).unwrap();
+}
+
+/// The same program over secp256k1 with the SHA-256 transcript: both backends prove and
+/// verify; a forged exit code is rejected.
 #[test]
 fn secp256k1_sha256_proofs() {
     use bpvm_zk::TranscriptKind;
     use bulletproofs::curve::Secp256k1;
     let img = small_program();
     let t = exec(&img);
-    let (stmt, wit) = bpvm_zk::witness_for::<Secp256k1>(&img, &t).unwrap();
+    let (stmt, wit) = bpvm_zk::witness::<Secp256k1>(&img, &t).unwrap();
     for backend in BACKENDS {
         let (proof, stats) = bpvm_zk::prove_with(&stmt, &wit, backend, TranscriptKind::Sha256).unwrap();
         println!("secp256k1 {backend:?}: {} gates, {} B", stats.gates, stats.proof_bytes);
@@ -382,7 +400,7 @@ fn simplicity_verifier_compiles() {
     use bulletproofs::simplicity::{dummy_env, sighash_of};
     let img = small_program();
     let t = exec(&img);
-    let (stmt, wit) = bpvm_zk::witness_for::<Secp256k1>(&img, &t).unwrap();
+    let (stmt, wit) = bpvm_zk::witness::<Secp256k1>(&img, &t).unwrap();
     let (proof, _) = bpvm_zk::vm::simplicity::prove(&stmt, &wit, &sighash_of(&dummy_env())).unwrap();
     let sv = bpvm_zk::vm::simplicity::compile(&stmt).unwrap();
     assert!(sv.witness(&proof).is_ok());
@@ -399,7 +417,7 @@ fn simplicity_verifier_runs() {
     use bulletproofs::simplicity::{dummy_env, dummy_env_with_output, sighash_of, ExecError};
     let img = small_program();
     let t = exec(&img);
-    let (stmt, wit) = bpvm_zk::witness_for::<Secp256k1>(&img, &t).unwrap();
+    let (stmt, wit) = bpvm_zk::witness::<Secp256k1>(&img, &t).unwrap();
     let env = dummy_env();
     let sv = bpvm_zk::vm::simplicity::compile(&stmt).unwrap();
     let accepted = |r: Result<bulletproofs::simplicity::Report, ExecError>| match r {
@@ -459,12 +477,12 @@ fn mul_guest() {
     let (img, spec) = guest_with_io::<Scalar>("mul/mul.elf", &values);
     let t = exec(&img);
     assert_eq!(t.exit_code, 0);
-    let (st, wit) = bpvm_zk::witness_with_io(&img, &t, &spec).unwrap();
+    let (st, wit) = bpvm_zk::witness_with_io::<Ristretto>(&img, &t, &spec).unwrap();
     assert_eq!(st.private_in.len(), 2);
     assert_eq!(public_u64(&st), 100_003 * 70_001);
     // a 16-byte stack, timestamps of 8 bits (18 steps), the 8 registers the program names
     let c = bpvm_zk::cost(&st).unwrap();
-    assert_eq!((c.gates(Backend::Bppp), c.linear(Backend::Bppp)), (384, 576), "BP++ gates and linear slots");
+    assert_eq!((c.gates(Backend::Bppp), c.linear(Backend::Bppp)), (384, 562), "BP++ gates and linear slots");
     // the public statement does not contain a or b
     let hidden: Vec<u32> = st.private_in.iter().flat_map(|c| c.words.clone()).collect();
     assert!(st.ram.iter().filter(|(a, _)| hidden.contains(a)).all(|(_, v)| *v == 0));
@@ -472,7 +490,7 @@ fn mul_guest() {
         let (proof, stats) = bpvm_zk::prove(&st, &wit, backend).unwrap();
         println!("mul {backend:?}: {} steps, {} gates, {} B", st.steps, stats.gates, stats.proof_bytes);
         bpvm_zk::verify(&st, &proof).unwrap();
-        let reject = |f: &dyn Fn(&mut Statement)| {
+        let reject = |f: &dyn Fn(&mut Statement<Ristretto>)| {
             let mut forged = st.clone();
             f(&mut forged);
             assert!(bpvm_zk::verify(&forged, &proof).is_err());
@@ -491,7 +509,7 @@ fn mul_guest_simplicity() {
     let values: Vec<(&str, Vec<u64>)> = MUL_IN.iter().map(|(n, v)| (*n, vec![*v])).collect();
     let (img, spec) = guest_with_io::<<Secp256k1 as Curve>::Scalar>("mul/mul.elf", &values);
     let t = exec(&img);
-    let (st, wit) = bpvm_zk::witness_with_io_for::<Secp256k1>(&img, &t, &spec).unwrap();
+    let (st, wit) = bpvm_zk::witness_with_io::<Secp256k1>(&img, &t, &spec).unwrap();
     let env = dummy_env();
     let (proof, stats) = bpvm_zk::vm::simplicity::prove(&st, &wit, &sighash_of(&env)).unwrap();
     let sv = bpvm_zk::vm::simplicity::compile(&st).unwrap();
@@ -521,10 +539,45 @@ fn timestamp_width_follows_the_steps() {
     }
     let gates = |n: usize| {
         let img = steps_program(n);
-        let (st, _) = bpvm_zk::witness(&img, &exec(&img)).unwrap();
+        let (st, _) = bpvm_zk::witness::<Ristretto>(&img, &exec(&img)).unwrap();
         bpvm_zk::cost(&st).unwrap().gates(Backend::Bppp)
     };
     // one more digit per register access (3 a step) from 65 steps
     let (a, b, c) = (gates(63), gates(64), gates(65));
     assert!(c - b > (b - a) + 3 * 60, "{a}, {b}, {c}: the width did not change at 65 steps");
+}
+
+/// The cost of every guest on both backends: (BP multipliers, BP++ gates, BP++ linear slots),
+/// pinned. Before the fork's API refactor (2026-10-22) they were mul (846, 384, 576),
+/// balance (3882, 1866, 2310), fib (3490, 1919, 1409), sha256 (286738, 160163, 105228); the
+/// refactor folds witnesses that stand alone in a product's input into its wires, which saves
+/// half multipliers (BP) and linear slots (BP++), never a gate.
+#[test]
+fn guest_costs_are_pinned() {
+    use curve25519_dalek::scalar::Scalar;
+    let triple = |st: &bpvm_zk::Statement<Ristretto>| {
+        let c = bpvm_zk::cost(st).unwrap();
+        (c.gates(Backend::Bp), c.gates(Backend::Bppp), c.linear(Backend::Bppp))
+    };
+    let mut got = Vec::new();
+    let mul: Vec<(&str, Vec<u64>)> = MUL_IN.iter().map(|(n, v)| (*n, vec![*v])).collect();
+    let bal: Vec<(&str, Vec<u64>)> = vec![("inputs", vec![1000, 2500]), ("outputs", vec![3000, 490]), ("fee", vec![10]), ("max_output", vec![5000])];
+    for (name, values) in [("mul", mul), ("balance", bal)] {
+        let (img, spec) = guest_with_io::<Scalar>(&format!("{name}/{name}.elf"), &values);
+        let t = exec(&img);
+        got.push((name, triple(&bpvm_zk::witness_with_io::<Ristretto>(&img, &t, &spec).unwrap().0)));
+    }
+    for name in ["fib", "sha256"] {
+        let Ok(bytes) = std::fs::read(format!("{}/../../guest/{name}/{name}.elf", env!("CARGO_MANIFEST_DIR"))) else {
+            eprintln!("skipping {name}: build guest/ with `make -C guest`");
+            continue;
+        };
+        let img = Image::from_elf(&bytes).unwrap();
+        got.push((name, triple(&bpvm_zk::witness::<Ristretto>(&img, &exec(&img)).unwrap().0)));
+    }
+    let pinned = [("mul", (835, 384, 562)), ("balance", (3841, 1866, 2247)), ("fib", (3441, 1919, 1313)), ("sha256", (282093, 160163, 100930))];
+    for (name, c) in &got {
+        println!("COST {name}: {c:?}");
+        assert_eq!(Some(c), pinned.iter().find(|(n, _)| n == name).map(|(_, p)| p), "{name}");
+    }
 }

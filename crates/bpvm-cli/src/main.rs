@@ -10,7 +10,7 @@
 //! ```
 //!
 //! `--curve` picks the group of the proof and the Pedersen commitments: `ristretto255` (the
-//! default) or `secp256k1` (feature `secp256k1`, on by default; Liquid's curve). The proof file
+//! default) or `secp256k1` (Liquid's curve). The proof file
 //! records it, and `verify` uses the one recorded (`ristretto255` if the file names none).
 //! Scalars (blindings) and commitments are hex in the curve's own encoding.
 //!
@@ -39,11 +39,11 @@ use bpvm_zk::{Backend, Committed, IoSpec, Statement, TranscriptKind};
 use bulletproofs::curve::ff::Field as _;
 use bulletproofs::curve::{Curve, Field, PointEncoding};
 use bulletproofs::r1cs::R1CSProof;
-use bulletproofs::Ristretto;
+use bulletproofs::curve::{Ristretto, Secp256k1};
 use serde_json::{json, Map, Value};
 
 const MAX_STEPS: u64 = 1 << 20;
-/// Version of the proof file; 2: the circuit of the CircuitBuilder port (BP or BP++).
+/// Version of the proof file; 2: the circuit on the fork's builder operations (BP or BP++).
 const PROOF_FILE_VERSION: u64 = 2;
 const USAGE: &str = "usage:
   bpvm run    <elf> [-i input.json]
@@ -113,17 +113,13 @@ fn curve_of(a: &Args) -> Result<CurveKind, String> {
     a.flags.get("--curve").map_or(Ok(CurveKind::Ristretto255), |c| c.parse())
 }
 
-/// Call `$f::<C>($args)` with the curve `$curve`.
-macro_rules! on_curve {
-    ($curve:expr, $f:ident($($args:expr),*)) => {
-        match $curve {
-            CurveKind::Ristretto255 => $f::<Ristretto>($curve, $($args),*),
-            #[cfg(feature = "secp256k1")]
-            CurveKind::Secp256k1 => $f::<bulletproofs::curve::Secp256k1>($curve, $($args),*),
-            #[cfg(not(feature = "secp256k1"))]
-            CurveKind::Secp256k1 => Err("this bpvm was built without the secp256k1 feature".to_string()),
-        }
-    };
+/// A command line, parsed; the curve is chosen once, for all of it ([`execute`]).
+enum Command {
+    /// Execute, and prove unless `Mode::Run`.
+    Run { path: String, input: Option<String>, mode: Mode },
+    /// Verify the proof file `file` (read from `proof_path`) of the ELF at `path`; `require`:
+    /// the backend the proof must use.
+    Verify { path: String, proof_path: String, file: Value, require: Option<Backend> },
 }
 
 fn main() -> ExitCode {
@@ -131,18 +127,34 @@ fn main() -> ExitCode {
         let p = &a.positional;
         let backend = backend_of(&a)?;
         let kind = transcript_of(&a)?;
-        let curve = curve_of(&a)?;
-        match p.first().map(String::as_str) {
-            Some("run") if p.len() == 2 => on_curve!(curve, run(&p[1], a.flags.get("-i"), Mode::Run, backend, kind)),
+        let input = a.flags.get("-i").cloned();
+        let run = |path: &str, mode: Mode| Command::Run { path: path.to_string(), input: input.clone(), mode };
+        let cmd = match p.first().map(String::as_str) {
+            Some("run") if p.len() == 2 => run(&p[1], Mode::Run),
             Some("prove") if p.len() == 2 => {
                 let stem = p[1].strip_suffix(".elf").unwrap_or(&p[1]).to_string();
                 let out = a.flags.get("-o").cloned().unwrap_or(format!("{stem}.proof.json"));
                 let sec = a.flags.get("-s").cloned().unwrap_or(format!("{stem}.secrets.json"));
-                on_curve!(curve, run(&p[1], a.flags.get("-i"), Mode::Prove { out, sec }, backend, kind))
+                run(&p[1], Mode::Prove { out, sec })
             }
-            Some("verify") if p.len() == 3 => verify(&p[1], &p[2], a.flags.contains_key("--backend").then_some(backend)),
-            Some(_) if p.len() == 1 => on_curve!(curve, run(&p[0], a.flags.get("-i"), if a.no_prove { Mode::Run } else { Mode::Demo }, backend, kind)),
-            _ => Err(USAGE.into()),
+            Some("verify") if p.len() == 3 => {
+                let file = read_json(&p[2])?;
+                Command::Verify { path: p[1].clone(), proof_path: p[2].clone(), file, require: a.flags.contains_key("--backend").then_some(backend) }
+            }
+            Some(_) if p.len() == 1 => run(&p[0], if a.no_prove { Mode::Run } else { Mode::Demo }),
+            _ => return Err(USAGE.into()),
+        };
+        // the curve: `--curve`, or for `verify` the one the proof file records
+        let curve = match &cmd {
+            Command::Verify { file, proof_path, .. } => match file.get("curve") {
+                None => CurveKind::Ristretto255,
+                Some(c) => c.as_str().ok_or(format!("{proof_path}: \"curve\" must be a string"))?.parse().map_err(|e| format!("{proof_path}: {e}"))?,
+            },
+            Command::Run { .. } => curve_of(&a)?,
+        };
+        match curve {
+            CurveKind::Ristretto255 => execute::<Ristretto>(curve, cmd, backend, kind),
+            CurveKind::Secp256k1 => execute::<Secp256k1>(curve, cmd, backend, kind),
         }
     });
     match res {
@@ -151,6 +163,13 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn execute<C: Curve>(curve: CurveKind, cmd: Command, backend: Backend, kind: TranscriptKind) -> Result<(), String> {
+    match cmd {
+        Command::Run { path, input, mode } => run::<C>(curve, &path, input.as_ref(), mode, backend, kind),
+        Command::Verify { path, proof_path, file, require } => verify::<C>(curve, &path, &proof_path, &file, require),
     }
 }
 
@@ -334,7 +353,7 @@ fn run<C: Curve>(curve: CurveKind, path: &str, input: Option<&String>, mode: Mod
         }
     }
 
-    let (stmt, wit) = bpvm_zk::witness_with_io_for::<C>(&img, &trace, &spec)?;
+    let (stmt, wit) = bpvm_zk::witness_with_io::<C>(&img, &trace, &spec)?;
     let mix: Vec<String> = stmt.op_counts.iter().map(|(op, n)| format!("{op:?}×{n}")).collect();
     println!("instruction mix: {}", mix.join(" "));
 
@@ -411,16 +430,7 @@ fn run<C: Curve>(curve: CurveKind, path: &str, input: Option<&String>, mode: Mod
 
 /// `require`: the backend the proof must use (`--backend`); any if `None`. The curve is the
 /// one the proof file records.
-fn verify(path: &str, proof_path: &str, require: Option<Backend>) -> Result<(), String> {
-    let f = read_json(proof_path)?;
-    let curve: CurveKind = match f.get("curve") {
-        None => CurveKind::Ristretto255,
-        Some(c) => c.as_str().ok_or(format!("{proof_path}: \"curve\" must be a string"))?.parse().map_err(|e| format!("{proof_path}: {e}"))?,
-    };
-    on_curve!(curve, verify_on(path, proof_path, &f, require))
-}
-
-fn verify_on<C: Curve>(curve: CurveKind, path: &str, proof_path: &str, f: &Value, require: Option<Backend>) -> Result<(), String> {
+fn verify<C: Curve>(curve: CurveKind, path: &str, proof_path: &str, f: &Value, require: Option<Backend>) -> Result<(), String> {
     let mut img = load(path)?;
     let get = |k: &str| f.get(k).ok_or(format!("{proof_path}: missing {k:?}"));
     let obj = |k: &str| get(k).and_then(|v| v.as_object().cloned().ok_or(format!("{proof_path}: {k:?} must be an object")));

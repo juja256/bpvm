@@ -6,7 +6,7 @@
 //! range-checks every `vd`, so every value in the register file and RAM is a 32-bit word.
 //! RAM accesses (loads/stores) happen here, at timestamp $4\,\mathsf{clk} + 4$.
 
-use bulletproofs::r1cs::{CircuitBuilder, R1CSError, Variable};
+use bulletproofs::r1cs::{ConstraintSystem, R1CSError, Variable};
 use bulletproofs::curve::Field;
 
 use crate::gadgets::*;
@@ -51,7 +51,7 @@ struct Vars {
     vd: Variable,
 }
 
-pub fn chip<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, w: Option<&Row>) -> Result<(), R1CSError> {
+pub fn chip<F: Field, CS: ConstraintSystem<F>>(env: &mut Env<'_, F, CS>, op: Op, w: Option<&Row>) -> Result<(), R1CSError> {
     let x = Vars {
         clk: env.witness(w.map(|r| r.clk))?,
         pc: env.witness(w.map(|r| r.pc as u64))?,
@@ -136,7 +136,7 @@ pub fn chip<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, w
                     _ => a >= b,
                 }
             });
-            let off = env.mul(cond, x.imm - s::<F>(4));
+            let off = env.mul(cond, x.imm - s::<F>(4))?;
             let carry = env.boolean(w.zip(taken).map(|(r, t)| {
                 (r.pc as u64 + if t { r.imm as u64 } else { 4 }) >> 32 == 1
             }))?;
@@ -171,7 +171,7 @@ pub fn chip<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, w
         }
         SLL | SLLI => {
             let p = env.shift_pow(bl, wb)?;
-            let prod = env.mul(a, p.into());
+            let prod = env.mul(a, p.into())?;
             let hi = wab.map(|(a, b)| (((a as u64) << (b & 31)) >> 32) as u32);
             let h = env.witness(hi.map(|v| v as u64))?;
             env.constrain(prod - vd - h * t32);
@@ -186,24 +186,24 @@ pub fn chip<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, w
             // rem < p
             env.range32(lc(p) - rem - F::ONE, rem_v.zip(sh).map(|(r, s)| ((1u64 << s) - 1 - r as u64) as u32))?;
             if matches!(op, SRL | SRLI) {
-                let qp = env.mul(vd.clone(), p.into());
+                let qp = env.mul(vd.clone(), p.into())?;
                 env.constrain(a - qp - rem);
             } else {
                 let sa = env.msb32(a.clone(), wa)?;
                 let u = env.witness(wab.map(|(a, b)| (a >> (b & 31)) as u64))?;
-                let up = env.mul(u.into(), p.into());
+                let up = env.mul(u.into(), p.into())?;
                 env.constrain(a - up - rem);
                 // q = 2^(32 - sh), the sign-extension mask is 2^32 - q
                 let q = env.witness(sh.map(|s| 1u64 << (32 - s)))?;
-                let qp = env.mul(q.into(), p.into());
+                let qp = env.mul(q.into(), p.into())?;
                 env.constrain(qp - t32);
-                let m = env.mul(sa.into(), lc(t32) - q);
+                let m = env.mul(sa.into(), lc(t32) - q)?;
                 env.constrain(vd - u - m);
             }
         }
 
         MUL | MULHU => {
-            let prod = env.mul(a, bl);
+            let prod = env.mul(a, bl)?;
             let full = wab.map(|(a, b)| a as u64 * b as u64);
             if op == MUL {
                 let hi = full.map(|p| (p >> 32) as u32);
@@ -226,7 +226,7 @@ pub fn chip<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, w
             } else {
                 (bl, wab.map(|(a, b)| a as i32 as i128 * b as i128))
             };
-            let prod = env.mul(sa_lc, b_lc);
+            let prod = env.mul(sa_lc, b_lc)?;
             let k = env.boolean(pv.map(|p| p < 0))?;
             let lo = pv.map(|p| p as u64 as u32);
             let l = env.witness(lo.map(|v| v as u64))?;
@@ -245,14 +245,14 @@ pub fn chip<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, w
                 env.range32(q.into(), qr.map(|v| v.0))?;
                 (q.into(), vd.clone())
             };
-            let qb = env.mul(q.clone(), bl.clone());
+            let qb = env.mul(q.clone(), bl.clone())?;
             env.constrain(a - qb - r.clone());
             let zb = env.is_zero(bl.clone(), wb.map(|b| s::<F>(b as u64)))?;
             // b != 0  =>  r < b
-            let d = env.mul(lc(F::ONE) - zb, bl - r - F::ONE);
+            let d = env.mul(lc(F::ONE) - zb, bl - r - F::ONE)?;
             env.range32(d.into(), wab.zip(qr).map(|((_, b), (_, r))| if b == 0 { 0 } else { b - r - 1 }))?;
             // b == 0  =>  q = 2^32 - 1
-            let m = env.mul(zb.into(), q - s::<F>(u32::MAX as u64));
+            let m = env.mul(zb.into(), q - s::<F>(u32::MAX as u64))?;
             env.constrain(m.into());
         }
         DIV | REM => {
@@ -277,17 +277,17 @@ pub fn chip<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, w
             // overflow case: a = -2^31, b = -1
             let z1 = env.is_zero(a.clone() - pow2::<F>(31), wa.map(|a| s::<F>(a as u64) - pow2::<F>(31)))?;
             let z2 = env.is_zero(bl.clone() - s::<F>(u32::MAX as u64), wb.map(|b| s::<F>(b as u64) - s::<F>(u32::MAX as u64)))?;
-            let ovf = env.mul(z1.into(), z2.into());
+            let ovf = env.mul(z1.into(), z2.into())?;
 
             // A = Q B + R  (minus 2^32 in the overflow case)
-            let qb = env.mul(sq_lc, sb_lc.clone());
+            let qb = env.mul(sq_lc, sb_lc.clone())?;
             env.constrain(sa_lc - sr_lc.clone() - qb + ovf * t32);
 
             // b != 0  =>  |R| < |B|
-            let abs_r = env.mul(sr_lc, lc(F::ONE) - sr * s::<F>(2));
-            let abs_b = env.mul(sb_lc, lc(F::ONE) - sb * s::<F>(2));
+            let abs_r = env.mul(sr_lc, lc(F::ONE) - sr * s::<F>(2))?;
+            let abs_b = env.mul(sb_lc, lc(F::ONE) - sb * s::<F>(2))?;
             let zb = env.is_zero(bl.clone(), wb.map(|b| s::<F>(b as u64)))?;
-            let d = env.mul(lc(F::ONE) - zb, lc(abs_b) - abs_r - F::ONE);
+            let d = env.mul(lc(F::ONE) - zb, lc(abs_b) - abs_r - F::ONE)?;
             let dv = wab.zip(qr).map(|((_, b), (_, r))| {
                 if b == 0 {
                     0
@@ -297,10 +297,10 @@ pub fn chip<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, w
             });
             env.range32(d.into(), dv)?;
             // R != 0  =>  sign(R) = sign(A)
-            let m = env.mul(lc(sr) - sa, r);
+            let m = env.mul(lc(sr) - sa, r)?;
             env.constrain(m.into());
             // b == 0  =>  q = 2^32 - 1
-            let m = env.mul(zb.into(), q - s::<F>(u32::MAX as u64));
+            let m = env.mul(zb.into(), q - s::<F>(u32::MAX as u64))?;
             env.constrain(m.into());
         }
 
@@ -314,7 +314,7 @@ pub fn chip<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, w
 }
 
 /// Loads and stores: effective address, the RAM word access, byte/half selection.
-fn mem_op<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, x: &Vars, w: Option<&Row>) -> Result<(), R1CSError> {
+fn mem_op<F: Field, CS: ConstraintSystem<F>>(env: &mut Env<'_, F, CS>, op: Op, x: &Vars, w: Option<&Row>) -> Result<(), R1CSError> {
     use Op::*;
     let t32 = pow2::<F>(32);
     let ea = w.map(|r| r.v1 as u64 + r.imm as u64);
@@ -360,13 +360,13 @@ fn mem_op<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, x: 
             let (val, bits): (Lc<F>, u32) = if matches!(op, LB | LBU) {
                 let mut byte = lc(F::ZERO);
                 for i in 0..4 {
-                    byte = byte + env.mul(sel[i].clone(), bytes[i].into());
+                    byte = byte + env.mul(sel[i].clone(), bytes[i].into())?;
                 }
                 (byte, 8)
             } else {
                 let h0 = bytes[0] + bytes[1] * s::<F>(256);
                 let h1 = bytes[2] + bytes[3] * s::<F>(256);
-                let d = env.mul(sel[2].clone(), h1 - h0.clone());
+                let d = env.mul(sel[2].clone(), h1 - h0.clone())?;
                 (h0 + d, 16)
             };
             let raw = wb_v.zip(off).map(|(w, o)| (w >> (8 * o)) & ((1u64 << bits) - 1) as u32);
@@ -398,14 +398,14 @@ fn mem_op<F: Field, CS: CircuitBuilder<F>>(env: &mut Env<'_, F, CS>, op: Op, x: 
             let mut after = lc(wv);
             if op == SB {
                 for i in 0..4 {
-                    let d = env.mul(sel[i].clone(), lc(n) - bytes[i]);
+                    let d = env.mul(sel[i].clone(), lc(n) - bytes[i])?;
                     after = after + d * pow2::<F>(8 * i as u32);
                 }
             } else {
                 let h0 = bytes[0] + bytes[1] * s::<F>(256);
                 let h1 = bytes[2] + bytes[3] * s::<F>(256);
                 let low = lc(n) - h0;
-                let d = env.mul(sel[2].clone(), (lc(n) - h1) * pow2::<F>(16) - low.clone());
+                let d = env.mul(sel[2].clone(), (lc(n) - h1) * pow2::<F>(16) - low.clone())?;
                 after = after + low + d;
             }
             (wv.into(), after)

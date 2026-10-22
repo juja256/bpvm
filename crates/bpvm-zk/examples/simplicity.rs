@@ -42,7 +42,7 @@ fn main() {
         }
     }
     let trace = Machine::from_image(&img).run(1 << 20).expect("runs");
-    let (st, wit) = bpvm_zk::witness_with_io_for::<Secp256k1>(&img, &trace, &io).unwrap();
+    let (st, wit) = bpvm_zk::witness_with_io::<Secp256k1>(&img, &trace, &io).unwrap();
     let env = dummy_env();
     let t0 = Instant::now();
     let (proof, stats) = bpvm_zk::vm::simplicity::prove(&st, &wit, &sighash_of(&env)).unwrap();

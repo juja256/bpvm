@@ -4,7 +4,8 @@
 
 use std::time::Instant;
 
-use bulletproofs::r1cs::{ConstraintSystem, LinearCombination, Prover, R1CSProof, Variable, Verifier};
+use bulletproofs::curve::Ristretto;
+use bulletproofs::r1cs::{lc, ConstraintSystem, LinearCombination, Prover, R1CSProof, Variable, Verifier};
 use bulletproofs::{BulletproofGens, PedersenGens};
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
@@ -13,13 +14,13 @@ const N: usize = 1 << 12;
 const T: usize = 8;
 
 /// N multipliers x_i * x_i = y_i, then L constraints sum_{t<T} x_{(j+t) mod N} = known.
-fn circuit<CS: ConstraintSystem>(cs: &mut CS, l: usize, xs: Option<&[u64]>) {
+fn circuit<CS: ConstraintSystem<Scalar>>(cs: &mut CS, l: usize, xs: Option<&[u64]>) {
     let mut vars: Vec<Variable> = Vec::with_capacity(N);
     for i in 0..N {
         let x = xs.map(|xs| Scalar::from(xs[i]));
-        let (a, b, o) = cs.allocate_multiplier(x.map(|x| (x, x))).unwrap();
-        cs.constrain(a - b);
-        let _ = o;
+        let (a, b) = (cs.witness(x).unwrap(), cs.witness(x).unwrap());
+        cs.multiply(a.into(), b.into()).unwrap(); // a, b: the inputs of a multiplier
+        cs.constrain(lc(a) - b);
         vars.push(a);
     }
     let value = |i: usize| (i as u64 * 7 + 3) % 1000;
@@ -46,7 +47,7 @@ fn main() {
         let mut tr = Transcript::new(b"lin");
         let mut p = Prover::new(&pc, &mut tr);
         circuit(&mut p, l, Some(&xs));
-        let proof: R1CSProof = p.prove(&bp).unwrap();
+        let proof: R1CSProof<Ristretto> = p.prove(&bp).unwrap();
         let prove = t0.elapsed();
 
         let t1 = Instant::now();
