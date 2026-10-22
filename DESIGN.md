@@ -56,8 +56,9 @@ ALU test: 41.7k multipliers or 23.2k gates) including the fixed table costs (202
   module docs); public outputs constrain final values. CLI: `bpvm prove` / `bpvm verify`
   with JSON input, proof and secrets files.
 
-**Public / leaked**: program, step count, per-opcode counts, RAM image layout, exit code,
-public I/O, number of committed values.
+**Public / leaked**: program, step count, per-opcode counts, RAM image layout (including the
+stack's size, fixed when the guest is linked), exit code, public I/O, number of committed
+values. See "Privacy model" in the README.
 Values in registers and memory stay hidden (the R1CS proof is zero-knowledge).
 **Toy limits**: RAM accesses must stay inside the ELF's non-executable segments (stack is a
 `NOLOAD` section in `guest/common/link.ld`); naturally aligned accesses only; no self-modifying
@@ -144,10 +145,16 @@ RAM share one address space with a tag: $(\mathsf{space}, \mathsf{addr})$. Every
 time $t$ (with $t = 4\cdot\mathsf{clk} + \mathsf{slot}$) contributes a read tuple
 $(\mathsf{addr}, v_{\text{old}}, t_{\text{prev}})$ and a write tuple
 $(\mathsf{addr}, v_{\text{new}}, t)$, with $t_{\text{prev}} < t$ proven by a range lookup on
-$t - t_{\text{prev}} - 1$. Then
+$t - t_{\text{prev}} - 1$, on the smallest multiple of 8 bits with
+$4 \cdot \mathsf{steps} \le 2^{\mathsf{bits}}$ (every timestamp is at most $4 \cdot \mathsf{steps}$,
+and the consumed one is a real write's, so a read from the future gives a negative gap,
+$p - |d|$, outside the range). Then
 $$\mathsf{Init} \uplus \mathsf{Writes} = \mathsf{Reads} \uplus \mathsf{Final}$$
-as multisets, where $\mathsf{Init}$ holds the initial value of every touched word at time 0
-(public for data/rodata, zero elsewhere) and $\mathsf{Final}$ is supplied by the prover. The
+as multisets, where $\mathsf{Init}$ holds the initial value of every word of the RAM image and of
+every register the program names at time 0 (public for data/rodata, zero elsewhere) and
+$\mathsf{Final}$ is supplied by the prover. A register the program does not name is never
+accessed (an access takes its register from the fetched row of the public program), so its
+init and final tuples would cancel and are left out. The
 code segment is read-only and served by the public **program table** instead (no
 self-modifying code).
 

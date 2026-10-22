@@ -20,7 +20,7 @@ mul/        knowledge of factors: c = a · b, a and b private, c public
 | `fib` | 78 | 55 = F(10) | the smallest end-to-end proof |
 | `sha256` | 5 904 | 186 = `0xba`, first digest byte | a real hash function, 315k multipliers |
 | `balance` | 72 | 0 (balanced) | public and private I/O, commitments, JSON input |
-| `mul` | 18 | 0 | private factors, a public 64-bit product (`mul`, `mulhu`); 776 BP++ gates |
+| `mul` | 18 | 0 | private factors, a public 64-bit product (`mul`, `mulhu`); 384 BP++ gates |
 
 ## Requirements
 
@@ -32,6 +32,23 @@ brew install llvm lld
 
 `rules.mk` uses `/opt/homebrew/opt/llvm/bin/clang` and `ld.lld` from `PATH`; override with
 `make LLVM=/path/to/llvm/bin`.
+
+## Stack size
+
+Every word of the stack is part of the proven RAM image (an initial and a final memory tuple
+each), so the stack is sized per guest when it is linked: `STACK_SIZE := <bytes>` in the
+guest's `Makefile` (default 1024; `rules.mk` passes it to the linker as `__stack_size`, and
+`link.ld` names the region `__stack_bottom`..`__stack_top`). It is a property of the program,
+public like its code, and never taken from a run: a run's stack depth may depend on private
+inputs. `bpvm run` reports how much of the stack a run touched (`stack: 428 of 512 bytes
+touched`) and warns if the stack pointer went below it; choose a size that covers every input.
+
+| guest | `STACK_SIZE` | touched by the example run |
+|---|---|---|
+| `fib` | 16 | 0 |
+| `balance` | 16 | 0 |
+| `mul` | 16 | 0 |
+| `sha256` | 512 | 428 |
 
 ## Build
 

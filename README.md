@@ -61,12 +61,12 @@ commitments are hex in the curve's own encoding. In code: `witness_with_io_for::
 statement into a Simplicity program that verifies its proofs on Liquid (secp256k1, BP++, SHA-256
 transcript), and `vm::simplicity::prove` makes those proofs, bound to the spending transaction's
 `sig_all_hash` (the CLI's proofs are not bound to a transaction, so the program rejects them). The
-example `simplicity` compiles and runs it as a node would. Today the program accepts honest proofs
-but is far too large for a transaction: `mul` (776 gates, 1 660 MSM terms) gives a 2.17 MB
-program and fib a 3.55 MB one, against 400 kWU for a standard transaction. The VM's fixed tables
-and dense linear constraints dominate; a direct R1CS circuit of the same statement fits in a few
-kWU (measurements in the fork's
-[docs/simplicity-verifier.md](https://github.com/juja256/bulletproofs/blob/main/docs/simplicity-verifier.md)).
+example `simplicity` compiles and runs it as a node would. With the trimmed circuit (a 16-byte
+stack, timestamps sized by the trace, only the registers the program names) `mul` has 384 gates
+and 990 MSM terms; the fork's stage 4 compiler makes its verifier 312 kWU, which fits a standard
+transaction (400 kWU). The fork revision this repository pins (stage 3) gives 773 kWU; fib is
+far larger either way. Measurements in the fork's
+[docs/simplicity-verifier.md](https://github.com/juja256/bulletproofs/blob/main/docs/simplicity-verifier.md).
 
 Command line:
 
@@ -134,10 +134,46 @@ the guest reads it. Rust guests use the same section names, e.g.
 `#[no_mangle] #[link_section = ".bpvm.private_input.u64"] static mut X: [u64; 2] = [0; 2];`
 with volatile access.
 
+**Memory the circuit pays for.** Every word of the RAM image (data, bss, the stack) gets an
+initial and a final memory tuple, whether the run touches it or not; so do the registers the
+program names (the others are never accessed: an access takes its register from the fetched
+row of the public program). The stack is `STACK_SIZE` bytes, chosen when the guest is linked
+(default 1024, see [guest/README.md](guest/README.md)); `bpvm run` reports how much of it a run
+touched and warns if the stack pointer went below it. A 1 KB stack is 256 words, about 256 gates
+and 512 linear slots: most of the circuit of a small program like `mul`. Timestamp gaps are
+range-checked on as many bits as the trace needs ($4 \cdot \mathsf{steps} \le 2^{\mathsf{bits}}$,
+in 8-bit digits: one digit up to 64 steps), not a fixed 24.
+
+## Privacy model
+
+What a proof (and its proof file, or a Simplicity verifier compiled for it) makes public, and
+what it hides.
+
+- **Public:** the program (the ELF's code and initial data), the public inputs and outputs, the
+  exit code, the number of steps, the number of executed instructions of each opcode, the RAM
+  image's layout (its addresses, including the stack's size from the ELF), the commitments to the
+  private inputs and outputs, and so the circuit's size.
+- **Hidden:** the values of the private inputs and outputs (Pedersen commitments, perfectly
+  hiding), every intermediate value, register and memory content, the order of the executed
+  instructions, which branch was taken, and which addresses were read or written (memory tuples
+  are witnesses). BP and BP++ are honest-verifier zero-knowledge, made non-interactive by
+  Fiat–Shamir.
+- **What can leak.** The step count and the opcode counts depend on the control flow. A program
+  whose loop bounds or branches depend on private data reveals something about it through them
+  (as any execution length would). For full privacy, write guests whose step and opcode counts
+  are the same for all private inputs: no secret-dependent loop bounds, branches, or early exits.
+- **What does not.** The stack's size is fixed when the guest is linked, never taken from a run
+  (a run's stack depth can depend on private data); the timestamp width follows the public step
+  count; the registers in the boundary follow the public program. None of them adds a channel.
+- **Out of scope:** timing and memory side channels of the prover's machine (the default
+  `bppp-vartime` runs the norm argument in variable time on inputs that are uniformly random
+  given the transcript), and anything the guest itself writes to public outputs.
+
 ## Benchmarks
 
 `cargo run --release -p bpvm-cli [--features parallel] -- --backend bp|bppp <elf>`: execute,
-prove, verify (2026-10-20, bulletproofs fork `main` `f9f540a`, unchanged on `5b4439b`; BP++ with the default
+prove, verify (fib, balance, mul, SHA-256: 2026-10-22 with the trimmed circuit; ec-mini and
+ec-add: 2026-10-20, bulletproofs fork `main` `f9f540a`, before the trims; BP++ with the default
 `bppp-vartime`). BP size is in
 multipliers (padded to a power of two); BP++ size is gates $N_p + N_m$ plus linear slots
 $N_{lin}$ (free witnesses, multiplicities and copies; they cost no gate but lengthen the
@@ -145,24 +181,26 @@ commitments).
 
 | guest | steps | backend | size | proof | serial prove / verify | parallel prove / verify | parallel RSS |
 |---|---|---|---|---|---|---|---|
-| [Fibonacci](guest/fib/fib.c) | 78 | BP | 4 424 ($2^{13}$) | 1345 B | 0.51 s / 40 ms | 0.36 s / 37 ms | |
-| | | BP++ | 2 450 + 1 683 | 945 B | 0.27 s / 16 ms | 0.22 s / 16 ms | |
-| [balance](guest/balance/balance.c) | 72 | BP | 4 769 ($2^{13}$) | 1345 B | 0.49 s / 41 ms | | |
-| | | BP++ | 2 368 + 2 579 | 977 B | 0.27 s / 19 ms | | |
-| [mul](guest/mul/mul.c) | 18 | BP | 1 572 ($2^{11}$) | 1217 B | 0.17 s / 12 ms | | |
-| | | BP++ | 776 + 852 | 849 B | 0.13 s / 8 ms | | |
-| [SHA-256](guest/sha256/sha256.c) | 5 904 | BP | 314 536 ($2^{19}$) | 1729 B | 30.7 s / 2.49 s | 4.62 s / 0.43 s | 0.50 GB |
-| | | BP++ | 178 651 + 105 359 | 1329 B | 15.6 s / 1.05 s | 2.90 s / 0.37 s | 0.76 GB |
+| [Fibonacci](guest/fib/fib.c) | 78 | BP | 3 490 ($2^{12}$) | 1281 B | 0.27 s / 22 ms | 0.24 s / 22 ms | |
+| | | BP++ | 1 919 + 1 409 | 913 B | 0.18 s / 15 ms | 0.15 s / 15 ms | |
+| [balance](guest/balance/balance.c) | 72 | BP | 3 882 ($2^{12}$) | 1281 B | 0.29 s / 23 ms | | |
+| | | BP++ | 1 866 + 2 310 | 945 B | 0.24 s / 18 ms | | |
+| [mul](guest/mul/mul.c) | 18 | BP | 846 ($2^{10}$) | 1153 B | 72 ms / 7 ms | | |
+| | | BP++ | 384 + 576 | 817 B | 58 ms / 5 ms | | |
+| [SHA-256](guest/sha256/sha256.c) | 5 904 | BP | 286 738 ($2^{19}$) | 1729 B | 28.5 s / 2.49 s | 4.60 s / 0.57 s | 0.50 GB |
+| | | BP++ | 160 163 + 105 228 | 1329 B | 15.0 s / 1.11 s | 2.97 s / 0.48 s | 0.71 GB |
 | [ec-mini](guest-rs/ec-mini/src) | 20 713 | BP | 977 716 ($2^{20}$) | 1793 B | 75.8 s / 5.24 s | 11.6 s / 1.06 s | 1.13 GB |
 | | | BP++ | 578 989 + 263 047 | 1457 B | 49.5 s / 3.18 s | 8.89 s / 1.09 s | 2.15 GB |
 | [ec-add](guest-rs/ec-add/src) | 253 556 | BP | 12 407 583 ($2^{24}$) | 2049 B | did not fit in 24 GB | 166 s / 16.4 s | 10.1 GB |
 | | | BP++ | 7 262 452 + 3 529 272 | 1649 B | | 110 s / 16.0 s | 10.9 GB |
 
 The guests (the ELF next to each source):
+- The C guests set their stack to what they need (16 bytes for fib, balance and mul, which touch
+  none; 512 for SHA-256, which touches 428): before, every guest had 1 KB, 256 more words.
 - **Fibonacci** (C): the 10th Fibonacci number, 55 (the exit code).
 - **balance** (C): 4 committed inputs, 1 committed output.
 - **mul** (C): knowledge of factors, $c = a \cdot b$ with $a, b$ committed 32-bit inputs and
-  $c$ a public 64-bit output (rows measured 2026-10-21).
+  $c$ a public 64-bit output.
 - **SHA-256** (C): SHA-256("abc"), one block.
 - **ec-mini** (Rust, no dependencies): secp256k1 $G + 2G$ (Jacobian addition, checked against
   $3G$).
