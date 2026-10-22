@@ -67,6 +67,17 @@ before the refactor, 773 kWU with the stage 3 compiler), which fits a standard t
 (400 kWU). fib is far larger. Measurements in the fork's
 [docs/simplicity-verifier.md](https://github.com/juja256/bulletproofs/blob/main/docs/simplicity-verifier.md).
 
+**Liquid.** `bpvm_zk::liquid` (feature `simplicity`) turns a verifier into a Taproot output
+(one Simplicity leaf under BIP 341's unspendable key) and builds the transaction that spends it:
+the proof is made for the spending transaction (its `sig_all_hash`), the verifier runs as a node
+would, and the witness stack is `[witness, program, cmr, control block]`. The example
+`liquid_mul` deploys the verifier of `mul` on Liquid testnet and spends it:
+`liquid_mul address` prints the contract's address (and keeps the blindings of the commitments
+in a state file), `liquid_mul spend TXID:VOUT [--broadcast]` fetches the funding output from
+Esplora, proves, checks and (with `--broadcast`) posts the spend. The spend weighs about
+300 kWU (a standard transaction allows 400 kWU): the verifier's own bytes pay for its cost, so no
+annex padding is needed (annex padding is non-standard on Liquid).
+
 Command line:
 
 ```

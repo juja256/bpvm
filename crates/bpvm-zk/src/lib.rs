@@ -7,5 +7,7 @@ pub mod gadgets;
 pub mod isa;
 pub mod vm;
 
+#[cfg(feature = "simplicity")]
+pub mod liquid;
 pub use bulletproofs::r1cs::Backend;
 pub use vm::{cost, prove, prove_with, verify, verify_with, witness, witness_with_io, Committed, IoSpec, Statement, Stats, TranscriptKind, Witness};

@@ -515,7 +515,11 @@ fn mul_guest_simplicity() {
     let sv = bpvm_zk::vm::simplicity::compile(&st).unwrap();
     let r = sv.execute(&sv.witness(&proof).unwrap(), &env);
     println!("mul on Simplicity: {} gates, {} MSM terms: {:?}", stats.gates, sv.stats().msm_terms, r);
-    assert!(matches!(r, Ok(_) | Err(ExecError::Budget { .. }) | Err(ExecError::Cells(_))), "{r:?}");
+    // the program fits its budget without annex padding (non-standard on Liquid) and a
+    // standard transaction (400 kWU)
+    let r = r.unwrap_or_else(|e| panic!("{e:?}"));
+    assert!(r.cost_mwu <= r.budget_mwu && r.budget_mwu <= 400_000_000, "{r:?}");
+    let _ = ExecError::Cells(0);
 }
 
 /// `n` steps exactly: `addi`s, then the halt.
