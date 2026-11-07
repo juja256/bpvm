@@ -62,9 +62,9 @@ transcript), and `vm::simplicity::prove` makes those proofs, bound to the spendi
 example `simplicity` compiles and runs it as a node would. With the trimmed circuit (a 16-byte
 stack, timestamps sized by the trace, only the registers the program names) `mul` has 384 gates
 and 562 linear slots, and its verifier 976 MSM terms; the fork revision this repository pins
-(stage 4 compiler, API refactor) makes it cost 296.8 kWU (2026-10-22; 312 kWU with 576 slots
-before the refactor, 773 kWU with the stage 3 compiler), which fits a standard transaction
-(400 kWU). fib is far larger. Measurements in the fork's
+(stage 4 compiler, API refactor, BP++ proving the exact form of its inputs) makes it cost
+333.0 kWU (2026-11-07; 296.8 kWU before the fork's shape rows, 312 kWU with 576 slots before the
+refactor, 773 kWU with the stage 3 compiler), which fits a standard transaction (400 kWU). fib is far larger. Measurements in the fork's
 [docs/simplicity-verifier.md](https://github.com/juja256/bulletproofs/blob/main/docs/simplicity-verifier.md).
 
 **Liquid.** `bpvm_zk::liquid` (feature `simplicity`) turns a verifier into a Taproot output
@@ -75,7 +75,7 @@ would, and the witness stack is `[witness, program, cmr, control block]`. The ex
 `liquid_mul address` prints the contract's address (and keeps the blindings of the commitments
 in a state file), `liquid_mul spend TXID:VOUT [--broadcast]` fetches the funding output from
 Esplora, proves, checks and (with `--broadcast`) posts the spend. The spend weighs about
-300 kWU (a standard transaction allows 400 kWU): the verifier's own bytes pay for its cost, so no
+335 kWU (a standard transaction allows 400 kWU): the verifier's own bytes pay for its cost, so no
 annex padding is needed (annex padding is non-standard on Liquid). First run (2026-10-22):
 funding [`e1ef4d0f…e8ee`](https://blockstream.info/liquidtestnet/tx/e1ef4d0f758cef2b620e27eac557e5830bca9d7026a3600c1781fd2f0898e8ee)
 (faucet, 100 000 sat), spend [`bca66084…795a`](https://blockstream.info/liquidtestnet/tx/bca66084bd923af5cb269483d6b401b4cd5ea298fb27570938be9668b061795a)
