@@ -81,6 +81,11 @@ funding [`e1ef4d0f…e8ee`](https://blockstream.info/liquidtestnet/tx/e1ef4d0f75
 (faucet, 100 000 sat), spend [`bca66084…795a`](https://blockstream.info/liquidtestnet/tx/bca66084bd923af5cb269483d6b401b4cd5ea298fb27570938be9668b061795a)
 confirmed in block 2 671 850: weight 299 929 WU, fee 7 524 sat (0.1 sat/vB), witness stack
 803 + 298 347 + 32 + 33 bytes.
+With the fork's shape rows (2026-11-07, a new verifier and contract): funding
+[`902cf148…69c9`](https://blockstream.info/liquidtestnet/tx/902cf148ebb81ab0e67361e0b83da151e7bd3232abcde21fc3d40d08968969c9)
+(faucet, 100 000 sat), spend [`8fe88904…4028`](https://blockstream.info/liquidtestnet/tx/8fe88904499df565ede8ef2c78f72f12578ed11b3f99c2af472c2ba302a64028)
+confirmed in block 2 695 028: weight 334 253 WU, fee 8 382 sat, witness stack
+803 + 332 671 + 32 + 33 bytes, cost 332 983 082 mWU of a 333 594 000 mWU budget.
 
 Command line:
 
